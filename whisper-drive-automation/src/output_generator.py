@@ -110,22 +110,36 @@ class OutputGenerator:
         return str(file_path)
     
     def _generate_paragraphs_timestamps(self, base_filename, paragraphs):
-        """Génère le fichier avec paragraphes et timestamps"""
+        """Génère le fichier avec format court: (M:SS) texte (M:SS) texte sur la même ligne"""
         filename = f"{base_filename}_paragraphs_timestamps.txt"
         file_path = self.output_dir / filename
         
         with open(file_path, 'w', encoding='utf-8') as f:
-            for i, paragraph in enumerate(paragraphs, 1):
-                start_time = self._seconds_to_timestamp(paragraph['start'])
-                end_time = self._seconds_to_timestamp(paragraph['end'])
+            for paragraph in paragraphs:
+                # Construire une ligne avec plusieurs segments et leurs timestamps
+                line_parts = []
                 
-                f.write(f"=== Paragraphe {i} ===\n")
-                f.write(f"Temps: {start_time} --> {end_time}\n")
-                f.write(f"Mots: {paragraph['word_count']}\n")
-                f.write(f"Texte: {paragraph['text']}\n\n")
+                if 'segments' in paragraph:
+                    for segment in paragraph['segments']:
+                        timestamp = self._seconds_to_simple_timestamp(segment['start'])
+                        text = segment['text'].strip()
+                        line_parts.append(f"({timestamp}) {text}")
+                else:
+                    # Format alternatif : paragraphe simple avec un timestamp
+                    timestamp = self._seconds_to_simple_timestamp(paragraph['start'])
+                    text = paragraph['text'].strip()
+                    line_parts.append(f"({timestamp}) {text}")
+                
+                # Écrire tous les segments du paragraphe sur la même ligne, séparés par des espaces
+                f.write(' '.join(line_parts) + '\n\n')
         
         self.logger.info(f"📝 Paragraphes avec timestamps sauvés: {file_path}")
         return str(file_path)
+    
+    def _seconds_to_simple_timestamp(self, seconds):
+        """Convertit secondes en format M:SS (sans zéros inutiles)"""
+        minutes, seconds_remainder = divmod(seconds, 60)
+        return f"{int(minutes)}:{int(seconds_remainder):02d}"
     
     def _generate_complete_json(self, base_filename, result, paragraphs=None):
         """Génère le fichier JSON complet avec toutes les données"""
