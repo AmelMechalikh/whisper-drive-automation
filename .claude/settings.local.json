@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gcloud config:*)",
+      "Bash(docker build:*)",
+      "Bash(docker tag:*)",
+      "Bash(docker push:*)",
+      "Bash(gcloud run services list:*)",
+      "Bash(gcloud run deploy:*)",
+      "Bash(docker buildx build:*)",
+      "Bash(curl:*)",
+      "Bash(python3:*)",
+      "Bash(gcloud scheduler jobs list:*)",
+      "Bash(gcloud scheduler jobs describe:*)",
+      "Bash(gcloud compute project-info describe:*)",
+      "Bash(gcloud compute accelerator-types list:*)",
+      "Bash(gcloud services enable:*)",
+      "Bash(gcloud compute instances create:*)",
+      "Bash(gcloud compute ssh:*)",
+      "Bash(gcloud compute instances stop:*)",
+      "Bash(gcloud logging read:*)"
+    ]
+  }
+}

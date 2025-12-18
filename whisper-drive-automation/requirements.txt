@@ -1,0 +1,22 @@
+# Framework web pour Cloud Run
+flask==3.0.0
+
+# Whisper et traitement audio
+openai-whisper==20231117
+torch==2.1.1
+torchaudio==2.1.1
+
+# Google Cloud et Drive
+google-cloud-storage==2.10.0
+google-api-python-client==2.108.0
+google-auth==2.24.0
+google-auth-oauthlib==1.1.0
+google-auth-httplib2==0.1.1
+
+# Traitement de données
+pandas==2.1.3
+numpy==1.24.3
+
+# Utilitaires
+requests==2.31.0
+python-dateutil==2.8.2
