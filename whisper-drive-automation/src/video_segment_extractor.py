@@ -63,11 +63,19 @@ class VideoSegmentExtractor:
                     'duration': row['Durée (secondes)']
                 })
             
-            # Nom du fichier de sortie
-            comment = group.iloc[0]['Commentaire']
-            # Nettoyer le commentaire pour le nom de fichier
-            safe_comment = self._sanitize_filename(comment)[:30]
-            output_filename = f"{source_name}_highlight_{segment_num:02d}_{safe_comment}{source_ext}"
+            # Nom du fichier de sortie avec format: groupe_début-fin_début-fin
+            comment = group.iloc[0]['Groupe']
+
+            # Construire le nom avec début-fin de chaque sous-segment
+            # Ex: s2_0506-0553_0602-0614.mp4
+            segment_ranges = []
+            for seg in segments_to_merge:
+                start_str = self._seconds_to_timecode_short(seg['start'])
+                end_str = self._seconds_to_timecode_short(seg['end'])
+                segment_ranges.append(f"{start_str}-{end_str}")
+
+            # Format: groupe_MMSS-MMSS_MMSS-MMSS (ex: s2_0506-0553_0602-0614)
+            output_filename = f"{comment}_{'_'.join(segment_ranges)}{source_ext}"
             output_path = output_dir / output_filename
             
             if len(segments_to_merge) == 1:
@@ -119,14 +127,15 @@ class VideoSegmentExtractor:
         """
         try:
             # Commande ffmpeg pour extraire le segment
-            # -ss : position de départ
+            # -i : input file (d'abord pour seek précis)
+            # -ss : position de départ (APRÈS -i pour précision exacte)
             # -t : durée
-            # -c copy : copie les streams sans réencoder (rapide)
+            # -c copy : copie les streams sans réencoder
             # -avoid_negative_ts make_zero : évite les problèmes de timestamps négatifs
             cmd = [
                 'ffmpeg',
-                '-ss', str(start_seconds),
                 '-i', input_path,
+                '-ss', str(start_seconds),
                 '-t', str(duration),
                 '-c', 'copy',
                 '-avoid_negative_ts', 'make_zero',
@@ -197,7 +206,12 @@ class VideoSegmentExtractor:
             concat_file = temp_dir / "concat_list.txt"
             with open(concat_file, 'w') as f:
                 for seg_path in temp_segments:
-                    f.write(f"file '{seg_path}'\n")
+                    # Utiliser le chemin absolu et échapper les apostrophes pour ffmpeg
+                    from pathlib import Path
+                    abs_path = str(Path(seg_path).absolute())
+                    # Échapper les apostrophes en les remplaçant par '\''
+                    escaped_path = abs_path.replace("'", "'\\''")
+                    f.write(f"file '{escaped_path}'\n")
             
             # 3. Fusionner tous les segments
             cmd = [
@@ -231,6 +245,56 @@ class VideoSegmentExtractor:
             self.logger.error(f"Erreur fusion segments: {e}")
             return False
     
+    def get_segment_info(self, video_path: str) -> Dict:
+        """
+        Utilise ffprobe pour obtenir les informations d'un segment vidéo
+
+        Args:
+            video_path: Chemin vers le fichier vidéo
+
+        Returns:
+            Dict avec durée, codec, taille, etc.
+        """
+        try:
+            import json
+            cmd = [
+                'ffprobe',
+                '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_format',
+                '-show_streams',
+                video_path
+            ]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+
+            data = json.loads(result.stdout)
+
+            # Extraire les infos importantes
+            format_info = data.get('format', {})
+            video_stream = next(
+                (s for s in data.get('streams', []) if s.get('codec_type') == 'video'),
+                {}
+            )
+
+            return {
+                'duration': float(format_info.get('duration', 0)),
+                'size_bytes': int(format_info.get('size', 0)),
+                'video_codec': video_stream.get('codec_name', 'unknown'),
+                'width': video_stream.get('width'),
+                'height': video_stream.get('height'),
+                'bitrate': int(format_info.get('bit_rate', 0))
+            }
+
+        except Exception as e:
+            self.logger.error(f"Erreur ffprobe: {e}")
+            return {}
+
     def _sanitize_filename(self, text: str) -> str:
         """Nettoie un texte pour l'utiliser dans un nom de fichier"""
         import re
@@ -247,6 +311,12 @@ class VideoSegmentExtractor:
         minutes = int((td.total_seconds() % 3600) // 60)
         secs = td.total_seconds() % 60
         return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
+
+    def _seconds_to_timecode_short(self, seconds: float) -> str:
+        """Convertit secondes en format court MMSS pour nom de fichier"""
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{minutes:02d}{secs:02d}"
 
 
 def main():

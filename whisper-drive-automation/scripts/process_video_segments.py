@@ -30,9 +30,9 @@ class VideoSegmentProcessor:
         logger=None
     ):
         self.logger = logger or self._setup_logger()
-        
+
         # Initialiser les composants
-        self.drive_manager = DriveManager(credentials_path, self.logger)
+        self.drive_manager = DriveManager(credentials_path)
         self.video_extractor = VideoSegmentExtractor(self.logger)
         
         # IDs des dossiers
@@ -111,7 +111,7 @@ class VideoSegmentProcessor:
         # 1. Télécharger le fichier Excel
         self.logger.info(f"📥 Téléchargement Excel...")
         excel_path = self.temp_dir / file_name
-        self.drive_manager.download_file(file_id, str(excel_path))
+        self.drive_manager.download_file(file_id, file_name, str(excel_path))
         
         # 2. Chercher la vidéo source
         self.logger.info(f"🎬 Recherche de la vidéo source: {base_name}")
@@ -126,7 +126,7 @@ class VideoSegmentProcessor:
         self.logger.info(f"📥 Téléchargement vidéo source: {source_file['name']}")
         source_ext = Path(source_file['name']).suffix
         source_path = self.temp_dir / f"{base_name}{source_ext}"
-        self.drive_manager.download_file(source_file['id'], str(source_path))
+        self.drive_manager.download_file(source_file['id'], source_file['name'], str(source_path))
         
         # 4. Créer dossier pour les segments
         segments_folder = self.temp_dir / f"{base_name}_segments"
@@ -157,8 +157,8 @@ class VideoSegmentProcessor:
             clean_name = segment_name.replace(f"{base_name}_", "")
             self.drive_manager.upload_file(
                 segment_path,
-                subfolder_id,
-                clean_name
+                clean_name,
+                subfolder_id
             )
         
         self.logger.info(f"✅ {len(created_segments)} segment(s) uploadé(s) dans {base_name}/")
@@ -213,7 +213,8 @@ class VideoSegmentProcessor:
         
         folder = self.drive_manager.service.files().create(
             body=folder_metadata,
-            fields='id'
+            fields='id',
+            supportsAllDrives=True
         ).execute()
         
         return folder['id']

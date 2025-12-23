@@ -41,9 +41,9 @@ class HighlightOrchestrator:
         logger=None
     ):
         self.logger = logger or self._setup_logger()
-        
+
         # Initialiser les composants
-        self.drive_manager = DriveManager(credentials_path, self.logger)
+        self.drive_manager = DriveManager(credentials_path)
         self.highlight_extractor = HighlightExtractor(self.logger)
         self.video_extractor = VideoSegmentExtractor(self.logger)
         
