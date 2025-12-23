@@ -32,8 +32,8 @@ class HighlightsProcessor:
         
         # Initialiser les composants
         self.drive_manager = DriveManager(credentials_path)
-        self.highlight_extractor = HighlightExtractor()
-        self.video_extractor = VideoSegmentExtractor()
+        self.highlight_extractor = HighlightExtractor(logger)
+        self.video_extractor = VideoSegmentExtractor(logger)
         
         # Dossiers temporaires
         self.temp_dir = Path('/tmp/highlights')
@@ -250,8 +250,8 @@ class HighlightsProcessor:
         try:
             # 1. Télécharger l'Excel
             excel_path = self.temp_dir / excel_name
-            self.drive_manager.download_file(excel_id, str(excel_path))
-            
+            self.drive_manager.download_file(excel_id, excel_name, str(excel_path))
+
             # 2. Trouver la vidéo source
             source_file = self._find_source_video(base_name)
             if not source_file:
@@ -262,7 +262,7 @@ class HighlightsProcessor:
             source_ext = Path(source_file['name']).suffix
             source_path = self.temp_dir / f"{base_name}{source_ext}"
             logger.info(f"📥 Téléchargement: {source_file['name']}")
-            self.drive_manager.download_file(source_file['id'], str(source_path))
+            self.drive_manager.download_file(source_file['id'], source_file['name'], str(source_path))
             
             # 4. Créer dossier pour les segments
             segments_folder = self.temp_dir / f"{base_name}_segments"
@@ -287,11 +287,10 @@ class HighlightsProcessor:
             logger.info(f"📤 Upload des segments...")
             for segment_path in created_segments:
                 segment_name = Path(segment_path).name
-                clean_name = segment_name.replace(f"{base_name}_", "")
                 self.drive_manager.upload_file(
                     segment_path,
-                    subfolder_id,
-                    clean_name
+                    segment_name,
+                    subfolder_id
                 )
             
             logger.info(f"✅ {len(created_segments)} segment(s) uploadé(s)")
