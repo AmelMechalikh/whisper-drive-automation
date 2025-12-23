@@ -177,6 +177,12 @@ class DriveManager:
                 mime_type = 'application/json'
             elif drive_filename.endswith('.srt'):
                 mime_type = 'text/plain'
+            elif drive_filename.endswith('.xlsx'):
+                mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            elif drive_filename.endswith('.mp4'):
+                mime_type = 'video/mp4'
+            elif drive_filename.endswith('.mp3'):
+                mime_type = 'audio/mpeg'
             
             # Métadonnées du fichier
             file_metadata = {
@@ -318,3 +324,166 @@ class DriveManager:
         except Exception as e:
             self.logger.error(f"❌ Erreur vérification transcription: {e}")
             return False
+    
+    def list_files_in_folder(self, folder_id, name_pattern=None):
+        """
+        Liste les fichiers dans un dossier avec pattern optionnel
+        
+        Args:
+            folder_id: ID du dossier à scanner
+            name_pattern: Pattern optionnel pour filtrer par nom (contains)
+        
+        Returns:
+            list: Liste des fichiers trouvés
+        """
+        try:
+            # Construction de la requête
+            query = f"'{folder_id}' in parents and trashed=false"
+            if name_pattern:
+                escaped_pattern = name_pattern.replace("'", "\\'")
+                query += f" and name contains '{escaped_pattern}'"
+            
+            self.logger.debug(f"🔍 Query list_files_in_folder: {query}")
+            
+            results = self.service.files().list(
+                q=query,
+                fields="files(id, name, mimeType, size, createdTime, modifiedTime)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+                orderBy='createdTime desc'
+            ).execute()
+            
+            files = results.get('files', [])
+            self.logger.info(f"📁 {len(files)} fichier(s) trouvé(s) dans le dossier")
+            
+            return files
+            
+        except Exception as e:
+            self.logger.error(f"❌ Erreur listage fichiers: {e}")
+            return []
+    
+    def search_files(self, folder_id, name_contains):
+        """
+        Cherche des fichiers par nom dans un dossier
+        
+        Args:
+            folder_id: ID du dossier à chercher
+            name_contains: Chaîne que le nom doit contenir
+        
+        Returns:
+            list: Liste des fichiers trouvés
+        """
+        try:
+            escaped_name = name_contains.replace("'", "\\'")
+            query = f"'{folder_id}' in parents and name contains '{escaped_name}' and trashed=false"
+            
+            self.logger.debug(f"🔍 Query search_files: {query}")
+            
+            results = self.service.files().list(
+                q=query,
+                fields="files(id, name, mimeType, size)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
+            ).execute()
+            
+            files = results.get('files', [])
+            self.logger.info(f"🔍 {len(files)} fichier(s) trouvé(s) avec '{name_contains}'")
+            
+            return files
+            
+        except Exception as e:
+            self.logger.error(f"❌ Erreur recherche fichiers: {e}")
+            return []
+    
+    def find_folder(self, parent_folder_id, folder_name):
+        """
+        Trouve un sous-dossier par nom exact
+        
+        Args:
+            parent_folder_id: ID du dossier parent
+            folder_name: Nom exact du dossier à chercher
+        
+        Returns:
+            str: ID du dossier trouvé ou None
+        """
+        try:
+            escaped_name = folder_name.replace("'", "\\'")
+            query = f"'{parent_folder_id}' in parents and name='{escaped_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+            
+            self.logger.debug(f"🔍 Query find_folder: {query}")
+            
+            results = self.service.files().list(
+                q=query,
+                fields="files(id, name)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
+            ).execute()
+            
+            folders = results.get('files', [])
+            
+            if folders:
+                folder_id = folders[0]['id']
+                self.logger.info(f"📁 Dossier trouvé: {folder_name} (ID: {folder_id})")
+                return folder_id
+            else:
+                self.logger.debug(f"📁 Dossier non trouvé: {folder_name}")
+                return None
+            
+        except Exception as e:
+            self.logger.error(f"❌ Erreur recherche dossier: {e}")
+            return None
+    
+    def create_folder(self, folder_name, parent_folder_id):
+        """
+        Crée un dossier dans Drive
+        
+        Args:
+            folder_name: Nom du dossier à créer
+            parent_folder_id: ID du dossier parent
+        
+        Returns:
+            str: ID du dossier créé ou None
+        """
+        try:
+            file_metadata = {
+                'name': folder_name,
+                'mimeType': 'application/vnd.google-apps.folder',
+                'parents': [parent_folder_id]
+            }
+            
+            folder = self.service.files().create(
+                body=file_metadata,
+                fields='id',
+                supportsAllDrives=True
+            ).execute()
+            
+            folder_id = folder.get('id')
+            self.logger.info(f"✅ Dossier créé: {folder_name} (ID: {folder_id})")
+            return folder_id
+            
+        except Exception as e:
+            self.logger.error(f"❌ Erreur création dossier: {e}")
+            return None
+    
+    def get_file_metadata(self, file_id):
+        """
+        Récupère les métadonnées d'un fichier
+        
+        Args:
+            file_id: ID du fichier
+        
+        Returns:
+            dict: Métadonnées du fichier ou None
+        """
+        try:
+            file_metadata = self.service.files().get(
+                fileId=file_id,
+                fields="id, name, mimeType, size, createdTime, modifiedTime, parents",
+                supportsAllDrives=True
+            ).execute()
+            
+            return file_metadata
+            
+        except Exception as e:
+            self.logger.error(f"❌ Erreur récupération métadonnées: {e}")
+            return None

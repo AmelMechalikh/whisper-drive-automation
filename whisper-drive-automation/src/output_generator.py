@@ -34,35 +34,86 @@ class OutputGenerator:
             dict: Chemins des fichiers générés
         """
         output_files = {}
-        
         try:
             # 1. Transcription texte simple
             txt_path = self._generate_transcription_txt(base_filename, whisper_result)
             output_files['transcription'] = txt_path
-            
+
+            # 1b. Transcription Google Doc
+            try:
+                gdoc_url = self._generate_transcription_gdoc(base_filename, whisper_result)
+                output_files['gdoc'] = gdoc_url
+            except Exception as e:
+                self.logger.error(f"Erreur création Google Doc: {e}")
+
             # 2. Format SRT avec timestamps
             srt_path = self._generate_srt(base_filename, whisper_result)
             output_files['srt'] = srt_path
-            
+
             # 3. Word timestamps
             word_timestamps_path = self._generate_word_timestamps(base_filename, whisper_result)
             output_files['word_timestamps'] = word_timestamps_path
-            
+
             # 4. Paragraphes avec timestamps (si disponible)
             if paragraphs:
                 paragraphs_path = self._generate_paragraphs_timestamps(base_filename, paragraphs)
                 output_files['paragraphs'] = paragraphs_path
-            
+
             # 5. JSON complet
             json_path = self._generate_complete_json(base_filename, whisper_result, paragraphs)
             output_files['complete_json'] = json_path
-            
+
             self.logger.info(f"✅ Tous les formats générés pour: {base_filename}")
             return output_files
-            
+
         except Exception as e:
             self.logger.error(f"❌ Erreur génération outputs: {e}")
             return {}
+        def _generate_transcription_gdoc(self, base_filename, result):
+            """Crée un Google Doc sur Drive avec la transcription"""
+            import json
+            from pathlib import Path
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent.parent / 'config'))
+            from drive_manager import DriveManager
+            import os
+            config_path = Path(__file__).parent.parent / 'config' / 'highlight_config.json'
+            with open(config_path) as f:
+                config = json.load(f)
+            credentials_path = Path(__file__).parent.parent / 'config' / 'credentials.json'
+            drive_manager = DriveManager(str(credentials_path))
+            folder_id = config['drive_folders']['highlighted_files']
+
+            # Créer le Google Doc
+            doc_metadata = {
+                'name': f"{base_filename}_transcription",
+                'mimeType': 'application/vnd.google-apps.document',
+                'parents': [folder_id]
+            }
+            doc = drive_manager.service.files().create(
+                body=doc_metadata,
+                supportsAllDrives=True
+            ).execute()
+            doc_id = doc['id']
+            from googleapiclient.discovery import build
+            docs_service = build('docs', 'v1', credentials=drive_manager.service._http.credentials)
+            requests = [
+                {
+                    'insertText': {
+                        'location': {
+                            'index': 1,
+                        },
+                        'text': result['text']
+                    }
+                }
+            ]
+            docs_service.documents().batchUpdate(
+                documentId=doc_id,
+                body={'requests': requests}
+            ).execute()
+            url = f"https://docs.google.com/document/d/{doc_id}/edit"
+            self.logger.info(f"📝 Google Doc créé: {url}")
+            return url
     
     def _generate_transcription_txt(self, base_filename, result):
         """Génère le fichier de transcription simple"""
