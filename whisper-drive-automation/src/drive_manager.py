@@ -295,11 +295,11 @@ class DriveManager:
         try:
             # Échapper les apostrophes dans le nom de fichier pour la requête Drive
             escaped_filename = base_filename.replace("'", "\\'")
-            
+
             # Chercher un fichier de transcription avec ce nom de base
             query = f"name contains '{escaped_filename}' and '{folder_id}' in parents and trashed=false"
-            self.logger.debug(f"🔍 Recherche transcription - Query: {query}")
-            
+            self.logger.info(f"🔍 Recherche transcription - Query: {query} | Folder ID: {folder_id}")
+
             results = self.service.files().list(
                 q=query,
                 fields="files(id, name)",
@@ -307,18 +307,39 @@ class DriveManager:
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True
             ).execute()
-            
+
             files = results.get('files', [])
-            self.logger.debug(f"🔍 Fichiers trouvés: {len(files)} - {[f['name'] for f in files]}")
-            
+            self.logger.info(f"🔍 Fichiers trouvés pour '{base_filename}': {len(files)} fichier(s)")
+
+            # Log TOUS les fichiers trouvés pour debug
+            if files:
+                for f in files:
+                    self.logger.info(f"  📄 Fichier trouvé: {f['name']}")
+
             # Vérifier si au moins un fichier de transcription existe
+            # IMPORTANT: Filtrage précis pour éviter les faux positifs
+            # "Jour 1 séance 1" ne doit PAS matcher "Séance 3 jour 1"
             transcription_suffixes = ['_transcription.txt', '_with_timestamps.srt', '_complete_data.json']
+
             for file in files:
-                if any(suffix in file['name'] for suffix in transcription_suffixes):
-                    self.logger.info(f"✅ Transcription trouvée: {file['name']}")
-                    return True
-            
-            self.logger.debug(f"❌ Aucune transcription trouvée pour: {base_filename}")
+                file_name = file['name']
+
+                # Vérifier si c'est un fichier de transcription
+                is_transcription = any(suffix in file_name for suffix in transcription_suffixes)
+
+                if is_transcription:
+                    # Vérifier que le nom du fichier COMMENCE VRAIMENT par le base_filename
+                    # Normaliser: lowercase et enlever les espaces multiples pour comparaison
+                    file_name_normalized = file_name.lower().strip()
+                    base_filename_normalized = base_filename.lower().strip()
+
+                    if file_name_normalized.startswith(base_filename_normalized):
+                        self.logger.info(f"✅ Transcription trouvée (match précis): {file_name}")
+                        return True
+                    else:
+                        self.logger.info(f"⚠️  Fichier ignoré (pas un match exact): {file_name}")
+
+            self.logger.info(f"❌ Aucune transcription trouvée pour: {base_filename}")
             return False
             
         except Exception as e:
