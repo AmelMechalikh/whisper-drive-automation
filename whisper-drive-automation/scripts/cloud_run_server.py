@@ -197,6 +197,7 @@ def process_files():
     """Traite les nouveaux fichiers audio - Route selon la taille"""
     import subprocess
     import time
+    from google.cloud import compute_v1
     start_time = datetime.now()
     logger.info("=== Début du traitement automatique ===")
 
@@ -291,47 +292,45 @@ def process_files():
             logger.info(f"🖥️  {len(files_to_vm)} fichiers: création de jobs pour VM")
 
             try:
-                # Démarrer la VM si elle est arrêtée
+                # Démarrer la VM si elle est arrêtée - Utiliser l'API Compute Engine
                 try:
                     logger.info(f"🔍 Vérification état de la VM {VM_NAME}...")
-                    result = subprocess.run(
-                        ['gcloud', 'compute', 'instances', 'describe', VM_NAME,
-                         f'--project={PROJECT_ID}', f'--zone={ZONE}',
-                         '--format=get(status)'],
-                        capture_output=True,
-                        text=True,
-                        timeout=10
+
+                    # Créer un client Compute Engine
+                    instances_client = compute_v1.InstancesClient()
+
+                    # Récupérer l'état de la VM
+                    instance = instances_client.get(
+                        project=PROJECT_ID,
+                        zone=ZONE,
+                        instance=VM_NAME
                     )
-                    
-                    if result.returncode == 0:
-                        vm_status = result.stdout.strip()
-                        logger.info(f"📊 État VM: {vm_status}")
-                        
-                        if vm_status == 'TERMINATED':
-                            logger.info(f"🚀 Démarrage de la VM {VM_NAME}...")
-                            start_result = subprocess.run(
-                                ['gcloud', 'compute', 'instances', 'start', VM_NAME,
-                                 f'--project={PROJECT_ID}', f'--zone={ZONE}'],
-                                capture_output=True,
-                                text=True,
-                                timeout=60
-                            )
-                            
-                            if start_result.returncode == 0:
-                                logger.info(f"✅ VM {VM_NAME} démarrée avec succès")
-                            else:
-                                logger.warning(f"⚠️  Échec démarrage VM: {start_result.stderr}")
-                        elif vm_status == 'RUNNING':
-                            logger.info(f"✅ VM {VM_NAME} déjà en cours d'exécution")
-                        else:
-                            logger.warning(f"⚠️  État VM inattendu: {vm_status}")
+
+                    vm_status = instance.status
+                    logger.info(f"📊 État VM: {vm_status}")
+
+                    if vm_status == 'TERMINATED':
+                        logger.info(f"🚀 Démarrage de la VM {VM_NAME}...")
+
+                        # Démarrer la VM avec l'API
+                        operation = instances_client.start(
+                            project=PROJECT_ID,
+                            zone=ZONE,
+                            instance=VM_NAME
+                        )
+
+                        logger.info(f"✅ Commande de démarrage envoyée - Operation: {operation.name}")
+                        logger.info(f"💡 La VM démarrera et le worker s'auto-lancera. Auto-shutdown après 5 min d'inactivité.")
+
+                    elif vm_status == 'RUNNING':
+                        logger.info(f"✅ VM {VM_NAME} déjà en cours d'exécution")
                     else:
-                        logger.warning(f"⚠️  VM {VM_NAME} non trouvée ou erreur: {result.stderr}")
-                
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"⏱️  Timeout vérification/démarrage VM")
+                        logger.warning(f"⚠️  État VM inattendu: {vm_status}")
+
                 except Exception as vm_error:
                     logger.warning(f"⚠️  Erreur gestion VM: {vm_error}")
+                    import traceback
+                    logger.warning(traceback.format_exc())
                     # Continue quand même pour créer les jobs
                 
                 # Créer un fichier de commande pour chaque fichier
