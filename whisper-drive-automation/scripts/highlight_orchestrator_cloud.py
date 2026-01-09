@@ -44,21 +44,26 @@ class HighlightsProcessor:
     
     def check_new_highlighted_files(self) -> list:
         """
-        Vérifie s'il y a de nouveaux fichiers avec commentaires
-        
+        Vérifie s'il y a de nouveaux fichiers marqués comme PRÊT dans le dossier transcriptions
+
         Returns:
-            Liste des fichiers Google Docs avec commentaires
+            Liste des fichiers Google Docs _paragraphs_timestamps avec balise READY
         """
-        logger.info("🔍 Vérification Highlighted Files...")
-        
-        highlighted_files = self.drive_manager.list_files_in_folder(
-            self.config['drive_folders']['highlighted_files']
+        logger.info("🔍 Vérification fichiers PRÊTS dans transcriptions...")
+
+        # Scanner le dossier transcriptions au lieu de highlighted_files
+        transcription_files = self.drive_manager.list_files_in_folder(
+            self.config['drive_folders']['transcriptions']
         )
-        
+
         result = []
-        for file_info in highlighted_files:
+        for file_info in transcription_files:
+            # Ne traiter que les fichiers _paragraphs_timestamps
+            if '_paragraphs_timestamps' not in file_info['name']:
+                continue
+
             logger.info(f"📄 Fichier détecté: {file_info['name']} (type: {file_info.get('mimeType', 'unknown')})")
-            
+
             # Accepter Google Docs ET fichiers texte
             mime_type = file_info.get('mimeType', '')
             accepted_types = [
@@ -66,23 +71,23 @@ class HighlightsProcessor:
                 'text/plain',                             # Fichier .txt
                 'text/x-log',                             # Fichiers log
             ]
-            
+
             if mime_type not in accepted_types:
                 logger.debug(f"⏭️  Ignoré (type non supporté): {file_info['name']}")
                 continue
-            
+
             # Skip si déjà traité dans cette instance
             if file_info['id'] in self.processed_files:
                 logger.debug(f"⏭️  Ignoré (déjà traité): {file_info['name']}")
                 continue
-            
+
             # Extraire le nom de base pour vérifier si Excel existe déjà
             base_name_check = file_info['name']
             for suffix in ['_paragraphs_timestamps.txt', '_paragraphs_timestamps', '__paragraphs_timestamps.txt', '__paragraphs_timestamps']:
                 if base_name_check.endswith(suffix):
                     base_name_check = base_name_check[:-len(suffix)]
                     break
-            
+
             # Vérifier si un Excel existe déjà pour ce fichier
             excel_name = f"{base_name_check}_highlights.xlsx"
             existing_excel = self.drive_manager.list_files_in_folder(
@@ -93,20 +98,54 @@ class HighlightsProcessor:
                 logger.info(f"⏭️  Ignoré (Excel existe déjà): {file_info['name']} → {excel_name}")
                 self.processed_files.add(file_info['id'])  # Marquer comme traité
                 continue
-            
-            # Vérifier si le fichier a des commentaires
+
+            # Vérifier si le fichier a la balise READY
             try:
-                comments = self.drive_manager.service.comments().list(
-                    fileId=file_info['id'],
-                    fields='comments(id)'
-                ).execute()
-                
-                if comments.get('comments'):
+                # Récupérer le contenu du document
+                if mime_type == 'application/vnd.google-apps.document':
+                    # Google Doc - utiliser l'API Docs
+                    from googleapiclient.discovery import build
+                    docs_service = build('docs', 'v1', credentials=self.drive_manager.creds)
+                    doc = docs_service.documents().get(documentId=file_info['id']).execute()
+
+                    # Extraire le texte
+                    content = doc.get('body', {}).get('content', [])
+                    text = ''
+                    for element in content:
+                        if 'paragraph' in element:
+                            for text_run in element['paragraph'].get('elements', []):
+                                if 'textRun' in text_run:
+                                    text += text_run['textRun'].get('content', '')
+                else:
+                    # Fichier texte - télécharger et lire
+                    import io
+                    request = self.drive_manager.service.files().get_media(fileId=file_info['id'])
+                    file_content = io.BytesIO()
+                    from googleapiclient.http import MediaIoBaseDownload
+                    downloader = MediaIoBaseDownload(file_content, request)
+                    done = False
+                    while not done:
+                        status, done = downloader.next_chunk()
+                    text = file_content.getvalue().decode('utf-8')
+
+                # Vérifier les balises
+                has_ready = '🎬 READY 🎬' in text or '🎬READY🎬' in text
+                has_processed = '🎬 PROCESSED 🎬' in text or '🎬PROCESSED🎬' in text
+
+                if has_processed:
+                    logger.info(f"⏭️  Ignoré (déjà traité - balise PROCESSED): {file_info['name']}")
+                    self.processed_files.add(file_info['id'])
+                    continue
+
+                if has_ready:
                     result.append(file_info)
-                    logger.info(f"✅ Trouvé: {file_info['name']} (avec commentaires)")
+                    logger.info(f"✅ Trouvé: {file_info['name']} (marqué PRÊT)")
+                else:
+                    logger.debug(f"⏭️  Ignoré (pas de balise READY): {file_info['name']}")
+
             except Exception as e:
-                logger.warning(f"Erreur vérification commentaires {file_info['name']}: {e}")
-        
+                logger.warning(f"Erreur vérification balise READY pour {file_info['name']}: {e}")
+
         return result
     
     def check_new_excel_files(self) -> list:
@@ -148,7 +187,55 @@ class HighlightsProcessor:
                 logger.info(f"✅ Trouvé: {excel_file['name']} (non traité)")
         
         return result
-    
+
+    def mark_as_processed(self, file_id: str, mime_type: str):
+        """
+        Marque un fichier comme PROCESSED en ajoutant la balise à la fin
+
+        Args:
+            file_id: ID du fichier Google Doc
+            mime_type: Type MIME du fichier
+        """
+        try:
+            if mime_type == 'application/vnd.google-apps.document':
+                # Google Doc - utiliser l'API Docs
+                from googleapiclient.discovery import build
+                docs_service = build('docs', 'v1', credentials=self.drive_manager.creds)
+
+                # Récupérer le document pour obtenir l'index de fin
+                doc = docs_service.documents().get(documentId=file_id).execute()
+
+                # Calculer l'index de la fin du document
+                content = doc.get('body', {}).get('content', [])
+                if not content:
+                    logger.warning(f"Document vide, impossible d'ajouter la balise PROCESSED")
+                    return
+
+                # Le dernier élément contient l'index de fin
+                end_index = content[-1].get('endIndex', 1) - 1
+
+                # Insérer la balise PROCESSED à la fin
+                requests = [{
+                    'insertText': {
+                        'location': {
+                            'index': end_index
+                        },
+                        'text': '\n\n🎬 PROCESSED 🎬\n'
+                    }
+                }]
+
+                docs_service.documents().batchUpdate(
+                    documentId=file_id,
+                    body={'requests': requests}
+                ).execute()
+
+                logger.info(f"✅ Balise PROCESSED ajoutée au document")
+
+            # Pour les fichiers texte, on ne peut pas les modifier facilement via l'API
+            # On skip pour l'instant
+        except Exception as e:
+            logger.warning(f"⚠️ Erreur lors de l'ajout de la balise PROCESSED: {e}")
+
     def process_highlighted_file(self, file_info: dict):
         """Traite un fichier avec commentaires → génère Excel"""
         file_name = file_info['name']
@@ -233,10 +320,13 @@ class HighlightsProcessor:
             )
             
             logger.info(f"✅ Excel créé et uploadé: {excel_filename} (ID: {excel_id})")
-            
-            # Marquer comme traité
+
+            # Marquer le document comme PROCESSED
+            self.mark_as_processed(file_id, file_info.get('mimeType', ''))
+
+            # Marquer comme traité dans cette instance
             self.processed_files.add(file_id)
-            
+
             return excel_path
             
             logger.info(f"✅ Excel créé: {excel_filename}")
