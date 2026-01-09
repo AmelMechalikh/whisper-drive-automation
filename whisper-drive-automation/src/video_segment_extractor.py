@@ -127,15 +127,17 @@ class VideoSegmentExtractor:
         """
         try:
             # Commande ffmpeg pour extraire le segment
-            # -i : input file (d'abord pour seek précis)
-            # -ss : position de départ (APRÈS -i pour précision exacte)
+            # -accurate_seek : seek précis même avec -c copy
+            # -ss : position de départ (AVANT -i pour éviter écran noir)
+            # -i : input file
             # -t : durée
             # -c copy : copie les streams sans réencoder
             # -avoid_negative_ts make_zero : évite les problèmes de timestamps négatifs
             cmd = [
                 'ffmpeg',
-                '-i', input_path,
+                '-accurate_seek',
                 '-ss', str(start_seconds),
+                '-i', input_path,
                 '-t', str(duration),
                 '-c', 'copy',
                 '-avoid_negative_ts', 'make_zero',

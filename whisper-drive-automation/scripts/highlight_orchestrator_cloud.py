@@ -342,7 +342,8 @@ class HighlightsProcessor:
         
         folder = self.drive_manager.service.files().create(
             body=folder_metadata,
-            fields='id'
+            fields='id',
+            supportsAllDrives=True
         ).execute()
         
         return folder['id']

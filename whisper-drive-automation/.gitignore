@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/
+test_output/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Credentials & Config
+config/credentials.json
+config/token.json
+*.key
+*.pem
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+temp_*/
+*.tmp
+*.bak
+*.backup
+Dockerfile.backup
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug scripts (keep in local only)
+scripts/debug_*.py
+scripts/test_*.py
+scripts/check_*.py
+scripts/investigate_*.py
+scripts/search_*.py
+scripts/verify_*.py
+scripts/find_*.py
+scripts/deep_*.py

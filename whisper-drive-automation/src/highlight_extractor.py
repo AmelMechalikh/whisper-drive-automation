@@ -263,17 +263,29 @@ class HighlightExtractor:
             # Récupérer les commentaires du fichier
             comments_response = drive_service.comments().list(
                 fileId=file_id,
-                fields='comments(id,content,quotedFileContent,anchor)',
+                fields='comments(id,content,quotedFileContent,anchor,resolved)',
                 includeDeleted=False
             ).execute()
 
-            comments = comments_response.get('comments', [])
+            all_comments = comments_response.get('comments', [])
 
-            if not comments:
+            # Filtrer pour ne garder que les commentaires NON RÉSOLUS
+            comments = [c for c in all_comments if not c.get('resolved', False)]
+
+            if not all_comments:
                 self.logger.info("Aucun commentaire trouvé")
                 return []
 
-            self.logger.info(f"📝 {len(comments)} commentaire(s) trouvé(s)")
+            self.logger.info(f"📝 {len(all_comments)} commentaire(s) trouvé(s) au total")
+            self.logger.info(f"   → {len(comments)} commentaire(s) non résolu(s)")
+
+            if len(all_comments) > len(comments):
+                resolved_count = len(all_comments) - len(comments)
+                self.logger.info(f"   ⏭️  {resolved_count} commentaire(s) résolu(s) ignoré(s)")
+
+            if not comments:
+                self.logger.warning("Aucun commentaire non résolu trouvé")
+                return []
 
             # Pour chaque commentaire, extraire le texte annoté + contexte
             for comment in comments:
@@ -461,13 +473,22 @@ class HighlightExtractor:
         segments = complete_data.get('segments', [])
         MAX_SEGMENT_DISTANCE = 30  # Limiter la recherche aux 30 segments suivant le début
 
-        # ÉTAPE 1: Chercher TOUS les candidats de début
+        # ÉTAPE 1: Chercher TOUS les candidats de début avec sliding window
+        # Pour gérer les highlights qui commencent dans un segment court,
+        # on concatène 3 segments consécutifs et on cherche dans cette fenêtre
         start_candidates = []
-        for seg_idx, segment in enumerate(segments):
-            segment_text_normalized = normalize_for_search(segment.get('text', ''))
+        WINDOW_SIZE = 3  # Nombre de segments à concaténer
 
-            # Chercher le début
-            if first_words in segment_text_normalized:
+        for seg_idx in range(len(segments)):
+            # Créer la fenêtre: concaténer les N segments suivants
+            window_segments = segments[seg_idx:seg_idx + WINDOW_SIZE]
+            window_text = ' '.join(seg.get('text', '') for seg in window_segments)
+            window_text_normalized = normalize_for_search(window_text)
+
+            # Chercher le début dans la fenêtre
+            if first_words in window_text_normalized:
+                segment = segments[seg_idx]
+
                 # Utiliser word timestamps si disponibles
                 candidate_start_time = None
                 if 'words' in segment and segment['words']:
