@@ -199,13 +199,26 @@ class HighlightsProcessor:
             
             # Générer le fichier Excel
             output_excel_path = self.temp_dir / f"{base_name}_highlights.xlsx"
-            
-            excel_path = self.highlight_extractor.extract_highlights_from_drive_file(
-                drive_service=self.drive_manager.service,
-                paragraph_file_id=file_id,
-                complete_json_path=str(complete_json_path),
-                output_excel_path=str(output_excel_path)
-            )
+
+            # Choisir la méthode d'extraction selon la config
+            extraction_method = self.config.get('processing', {}).get('extraction_method', 'comments')
+
+            if extraction_method == 'inline_markers':
+                logger.info("🎬 Utilisation de la méthode: balises inline")
+                excel_path = self.highlight_extractor.extract_highlights_from_inline_markers(
+                    document_id=file_id,
+                    credentials_path=str(Path(__file__).parent.parent / 'config' / 'credentials.json'),
+                    complete_json_path=str(complete_json_path),
+                    output_excel_path=str(output_excel_path)
+                )
+            else:
+                logger.info("💬 Utilisation de la méthode: commentaires")
+                excel_path = self.highlight_extractor.extract_highlights_from_drive_file(
+                    drive_service=self.drive_manager.service,
+                    paragraph_file_id=file_id,
+                    complete_json_path=str(complete_json_path),
+                    output_excel_path=str(output_excel_path)
+                )
             
             if not excel_path:
                 logger.warning(f"⚠️ Aucun highlight extrait pour {file_name}")

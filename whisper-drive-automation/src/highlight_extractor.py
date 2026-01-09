@@ -124,6 +124,83 @@ class HighlightExtractor:
         self.logger.info(f"✅ Excel créé avec {len(highlight_data)} highlights: {output_excel_path}")
         return output_excel_path
     
+    def extract_highlights_from_inline_markers(
+        self,
+        document_id: str,
+        credentials_path: str,
+        complete_json_path: str,
+        output_excel_path: str
+    ) -> str:
+        """
+        Extrait les highlights depuis des balises inline (🎬 S1 🎬) dans le document
+        Alternative à l'extraction par commentaires
+
+        Args:
+            document_id: ID du document Google Docs
+            credentials_path: Chemin vers credentials.json
+            complete_json_path: Chemin vers le fichier _complete_data.json
+            output_excel_path: Chemin de sortie pour le fichier Excel
+
+        Returns:
+            Chemin du fichier Excel créé ou None
+        """
+        from inline_marker_extractor import InlineMarkerExtractor
+
+        self.logger.info("🎬 Extraction via balises inline")
+
+        # Charger les données complètes (segments avec word timestamps)
+        with open(complete_json_path, 'r', encoding='utf-8') as f:
+            complete_data = json.load(f)
+
+        # Extraire les segments depuis le document
+        marker_extractor = InlineMarkerExtractor(logger=self.logger)
+        segments = marker_extractor.extract_segments_from_document(
+            document_id,
+            credentials_path
+        )
+
+        if not segments:
+            self.logger.warning("Aucun segment trouvé dans le document")
+            return None
+
+        # Matcher avec le transcript
+        matched_segments = marker_extractor.match_segments_with_transcript(
+            segments,
+            complete_data
+        )
+
+        if not matched_segments:
+            self.logger.warning("Aucun segment matché avec le transcript")
+            return None
+
+        # Créer le DataFrame pour l'Excel
+        highlight_data = []
+
+        for i, seg in enumerate(matched_segments, 1):
+            highlight_data.append({
+                'Numéro': i,
+                'Groupe': seg['segment_id'],
+                'Sous-segment': None,
+                'Total sous-segments': None,
+                'Début (secondes)': seg['start'],
+                'Fin (secondes)': seg['end'],
+                'Début (HH:MM:SS)': self._seconds_to_timecode(seg['start']),
+                'Fin (HH:MM:SS)': self._seconds_to_timecode(seg['end']),
+                'Durée (secondes)': seg['duration'],
+                'À fusionner': 'Non',
+                'Texte': seg['text'][:500]  # Limiter pour Excel
+            })
+
+        # Générer l'Excel
+        if highlight_data:
+            df = pd.DataFrame(highlight_data)
+            df.to_excel(output_excel_path, index=False, engine='openpyxl')
+            self.logger.info(f"✅ Excel créé: {output_excel_path}")
+            self.logger.info(f"   {len(highlight_data)} segment(s) extrait(s)")
+            return output_excel_path
+        else:
+            return None
+
     def _clean_highlight_text(self, text: str) -> str:
         """
         Nettoie le texte d'un highlight en retirant les marqueurs de formatage

@@ -8,6 +8,7 @@
   },
   "processing": {
     "watch_interval_seconds": 300,
-    "temp_dir": "./temp_highlights"
+    "temp_dir": "./temp_highlights",
+    "extraction_method": "inline_markers"
   }
 }
