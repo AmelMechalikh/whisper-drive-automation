@@ -31,11 +31,11 @@ class DriveManager:
     def _setup_drive_service(self):
         """Configure le service Google Drive API"""
         try:
-            credentials = Credentials.from_service_account_file(
-                self.credentials_path, 
+            self.creds = Credentials.from_service_account_file(
+                self.credentials_path,
                 scopes=self.scopes
             )
-            self.service = build('drive', 'v3', credentials=credentials)
+            self.service = build('drive', 'v3', credentials=self.creds)
             
             # Test de connexion
             about = self.service.about().get(fields="user").execute()
@@ -190,8 +190,14 @@ class DriveManager:
                 'parents': [folder_id]
             }
             
-            # Upload
-            media = MediaFileUpload(local_path, mimetype=mime_type)
+            # Upload with resumable upload for large files (chunked to avoid OOM)
+            # Chunk size: 50MB to avoid loading entire file in memory
+            media = MediaFileUpload(
+                local_path,
+                mimetype=mime_type,
+                resumable=True,
+                chunksize=50 * 1024 * 1024  # 50 MB chunks
+            )
             file = self.service.files().create(
                 body=file_metadata,
                 media_body=media,
@@ -366,15 +372,27 @@ class DriveManager:
             
             self.logger.debug(f"🔍 Query list_files_in_folder: {query}")
             
-            results = self.service.files().list(
-                q=query,
-                fields="files(id, name, mimeType, size, createdTime, modifiedTime)",
-                supportsAllDrives=True,
-                includeItemsFromAllDrives=True,
-                orderBy='createdTime desc'
-            ).execute()
-            
-            files = results.get('files', [])
+            # Récupérer TOUS les fichiers avec pagination
+            files = []
+            page_token = None
+
+            while True:
+                results = self.service.files().list(
+                    q=query,
+                    fields="nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime)",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                    orderBy='createdTime desc',
+                    pageSize=1000,
+                    pageToken=page_token
+                ).execute()
+
+                files.extend(results.get('files', []))
+                page_token = results.get('nextPageToken')
+
+                if not page_token:
+                    break
+
             self.logger.info(f"📁 {len(files)} fichier(s) trouvé(s) dans le dossier")
             
             return files

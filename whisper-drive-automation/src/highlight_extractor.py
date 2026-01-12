@@ -174,22 +174,37 @@ class HighlightExtractor:
             return None
 
         # Créer le DataFrame pour l'Excel
-        highlight_data = []
+        # Grouper les segments par segment_id pour permettre la fusion
+        from collections import defaultdict
+        grouped_by_id = defaultdict(list)
+        for seg in matched_segments:
+            grouped_by_id[seg['segment_id']].append(seg)
 
-        for i, seg in enumerate(matched_segments, 1):
-            highlight_data.append({
-                'Numéro': i,
-                'Groupe': seg['segment_id'],
-                'Sous-segment': None,
-                'Total sous-segments': None,
-                'Début (secondes)': seg['start'],
-                'Fin (secondes)': seg['end'],
-                'Début (HH:MM:SS)': self._seconds_to_timecode(seg['start']),
-                'Fin (HH:MM:SS)': self._seconds_to_timecode(seg['end']),
-                'Durée (secondes)': seg['duration'],
-                'À fusionner': 'Non',
-                'Texte': seg['text'][:500]  # Limiter pour Excel
-            })
+        highlight_data = []
+        segment_num = 1
+
+        for segment_id in sorted(grouped_by_id.keys()):
+            segments_in_group = grouped_by_id[segment_id]
+
+            # Trier les segments du groupe par timestamp de début
+            segments_in_group.sort(key=lambda x: x['start'])
+
+            for idx, seg in enumerate(segments_in_group):
+                highlight_data.append({
+                    'Numéro': segment_num,  # Même numéro pour tous les segments du groupe
+                    'Groupe': seg['segment_id'],
+                    'Sous-segment': idx + 1 if len(segments_in_group) > 1 else None,
+                    'Total sous-segments': len(segments_in_group) if len(segments_in_group) > 1 else None,
+                    'Début (secondes)': seg['start'],
+                    'Fin (secondes)': seg['end'],
+                    'Début (HH:MM:SS)': self._seconds_to_timecode(seg['start']),
+                    'Fin (HH:MM:SS)': self._seconds_to_timecode(seg['end']),
+                    'Durée (secondes)': seg['duration'],
+                    'À fusionner': 'Oui' if len(segments_in_group) > 1 else 'Non',
+                    'Texte': seg['text'][:500]  # Limiter pour Excel
+                })
+
+            segment_num += 1
 
         # Générer l'Excel
         if highlight_data:
@@ -548,7 +563,6 @@ class HighlightExtractor:
         self.logger.debug(f"Recherche fin: derniers mots '{last_words[:50]}...'")
 
         segments = complete_data.get('segments', [])
-        MAX_SEGMENT_DISTANCE = 30  # Limiter la recherche aux 30 segments suivant le début
 
         # ÉTAPE 1: Chercher TOUS les candidats de début avec sliding window
         # Pour gérer les highlights qui commencent dans un segment court,
@@ -564,24 +578,45 @@ class HighlightExtractor:
 
             # Chercher le début dans la fenêtre
             if first_words in window_text_normalized:
-                segment = segments[seg_idx]
+                # FIX: Déterminer dans QUEL segment de la fenêtre se trouvent les premiers mots
+                # Construire les textes cumulés pour identifier le bon segment
+                cumulative_text = ""
+                actual_segment_idx = seg_idx
+                actual_segment = segments[seg_idx]
+
+                for i, seg in enumerate(window_segments):
+                    seg_text_norm = normalize_for_search(seg.get('text', ''))
+
+                    # Vérifier si les premiers mots sont dans ce segment individuel
+                    if first_words in seg_text_norm:
+                        actual_segment_idx = seg_idx + i
+                        actual_segment = segments[actual_segment_idx]
+                        break
+
+                    # Sinon, vérifier dans le texte cumulé (pour les phrases qui traversent les segments)
+                    cumulative_text += " " + seg_text_norm if cumulative_text else seg_text_norm
+                    if first_words in cumulative_text:
+                        # Les premiers mots commencent dans ce segment
+                        actual_segment_idx = seg_idx + i
+                        actual_segment = segments[actual_segment_idx]
+                        break
 
                 # Utiliser word timestamps si disponibles
                 candidate_start_time = None
-                if 'words' in segment and segment['words']:
-                    for word_info in segment['words']:
+                if 'words' in actual_segment and actual_segment['words']:
+                    for word_info in actual_segment['words']:
                         word_normalized = normalize_for_search(word_info['word'])
                         # Chercher le premier mot du highlight
                         if words[0] in word_normalized:
                             candidate_start_time = word_info['start']
                             break
                 if candidate_start_time is None:
-                    candidate_start_time = segment['start']
+                    candidate_start_time = actual_segment['start']
 
                 start_candidates.append({
                     'time': candidate_start_time,
-                    'segment_idx': seg_idx,
-                    'segment_text': segment.get('text', '')
+                    'segment_idx': actual_segment_idx,
+                    'segment_text': actual_segment.get('text', '')
                 })
 
         if not start_candidates:
@@ -612,10 +647,10 @@ class HighlightExtractor:
         # ÉTAPE 3: Chercher TOUS les candidats de fin dans les segments suivants
         end_candidates = []
         for seg_idx, segment in enumerate(segments):
-            # Chercher la fin dans les segments PROCHES du début (limité à MAX_SEGMENT_DISTANCE)
+            # Chercher la fin dans tous les segments après le début
             if start_time is not None and start_segment_idx is not None:
-                # Vérifier qu'on est dans la fenêtre de recherche
-                if seg_idx >= start_segment_idx and seg_idx <= start_segment_idx + MAX_SEGMENT_DISTANCE:
+                # Vérifier qu'on est après le début
+                if seg_idx >= start_segment_idx:
                     segment_text_norm = normalize_for_search(segment.get('text', ''))
 
                     # Essayer plusieurs stratégies par ordre de spécificité

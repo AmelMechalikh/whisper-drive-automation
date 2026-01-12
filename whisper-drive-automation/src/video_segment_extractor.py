@@ -74,34 +74,68 @@ class VideoSegmentExtractor:
                 end_str = self._seconds_to_timecode_short(seg['end'])
                 segment_ranges.append(f"{start_str}-{end_str}")
 
-            # Format: groupe_MMSS-MMSS_MMSS-MMSS (ex: s2_0506-0553_0602-0614)
-            output_filename = f"{comment}_{'_'.join(segment_ranges)}{source_ext}"
-            output_path = output_dir / output_filename
-            
             if len(segments_to_merge) == 1:
-                # Un seul segment, extraction simple
+                # Un seul sous-segment, extraction simple
                 seg = segments_to_merge[0]
+                start_str = self._seconds_to_timecode_short(seg['start'])
+                end_str = self._seconds_to_timecode_short(seg['end'])
+                output_filename = f"{comment}_{start_str}-{end_str}{source_ext}"
+                output_path = output_dir / output_filename
+
                 success = self._extract_segment_ffmpeg(
                     source_video_path,
                     str(output_path),
                     seg['start'],
                     seg['duration']
                 )
+
+                if success:
+                    created_files.append(str(output_path))
+                    self.logger.info(f"✅ Segment {segment_num} créé: {output_filename}")
+                else:
+                    self.logger.error(f"❌ Échec extraction segment {segment_num}")
+
             else:
-                # Plusieurs segments à fusionner
-                self.logger.info(f"🔗 Fusion de {len(segments_to_merge)} segments pour '{comment}'")
+                # Plusieurs sous-segments: créer les fichiers individuels ET la fusion
+                self.logger.info(f"🎬 {len(segments_to_merge)} sous-segments pour '{comment}'")
+
+                # 1. Créer chaque sous-segment individuellement
+                for i, seg in enumerate(segments_to_merge, 1):
+                    start_str = self._seconds_to_timecode_short(seg['start'])
+                    end_str = self._seconds_to_timecode_short(seg['end'])
+                    subseg_filename = f"{comment}_{start_str}-{end_str}{source_ext}"
+                    subseg_path = output_dir / subseg_filename
+
+                    success = self._extract_segment_ffmpeg(
+                        source_video_path,
+                        str(subseg_path),
+                        seg['start'],
+                        seg['duration']
+                    )
+
+                    if success:
+                        created_files.append(str(subseg_path))
+                        self.logger.info(f"✅ Sous-segment {i}/{len(segments_to_merge)} créé: {subseg_filename}")
+                    else:
+                        self.logger.error(f"❌ Échec extraction sous-segment {i}")
+
+                # 2. Créer la version fusionnée
+                self.logger.info(f"🔗 Fusion de {len(segments_to_merge)} sous-segments en un seul fichier")
+                fusion_filename = f"{comment}_FUSION{source_ext}"
+                fusion_path = output_dir / fusion_filename
+
                 success = self._extract_and_merge_segments(
                     source_video_path,
-                    str(output_path),
+                    str(fusion_path),
                     segments_to_merge,
                     output_dir
                 )
-            
-            if success:
-                created_files.append(str(output_path))
-                self.logger.info(f"✅ Segment {segment_num} créé: {output_filename}")
-            else:
-                self.logger.error(f"❌ Échec extraction segment {segment_num}")
+
+                if success:
+                    created_files.append(str(fusion_path))
+                    self.logger.info(f"✅ Segment fusionné créé: {fusion_filename}")
+                else:
+                    self.logger.error(f"❌ Échec fusion segment {segment_num}")
         
         self.logger.info(f"🎬 {len(created_files)} segment(s) vidéo créé(s)")
         return created_files
