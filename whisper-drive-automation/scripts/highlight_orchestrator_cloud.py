@@ -660,6 +660,7 @@ def init_processor():
     # Chercher credentials dans plusieurs emplacements
     possible_creds = [
         Path('/app/config/credentials.json'),  # Cloud Run
+        Path('/opt/highlights-worker/config/credentials.json'),  # VM
         Path(__file__).parent.parent / 'config' / 'credentials.json',  # Local
     ]
     
