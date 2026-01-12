@@ -713,7 +713,7 @@ class HighlightExtractor:
             # Stratégie robuste: choisir le candidat dont le texte du transcript
             # entre début et fin couvre le mieux le texte du highlight
             best_candidate = None
-            best_coverage = 0
+            best_distance_from_1 = float('inf')  # Distance du ratio par rapport à 1.0
 
             for candidate in end_candidates:
                 # Construire le texte du transcript entre start_time et ce candidat
@@ -732,19 +732,30 @@ class HighlightExtractor:
 
                 self.logger.debug(f"  Candidat {candidate['time']:.2f}s: transcript={transcript_len} chars, highlight={highlight_len} chars, ratio={coverage_ratio:.2f}")
 
-                # Le meilleur candidat est celui qui couvre au moins 80% du highlight
-                # et est le plus proche de 100%
-                if coverage_ratio >= 0.8 and coverage_ratio > best_coverage:
-                    best_coverage = coverage_ratio
-                    best_candidate = candidate
+                # Le meilleur candidat est celui dont le ratio est le plus PROCHE de 1.0
+                # (permettre une marge de 0.7 à 1.5 pour gérer les variations de ponctuation)
+                if 0.7 <= coverage_ratio <= 1.5:
+                    distance = abs(coverage_ratio - 1.0)
+                    if distance < best_distance_from_1:
+                        best_distance_from_1 = distance
+                        best_candidate = candidate
+                        self.logger.debug(f"    → Meilleur candidat actuel (distance={distance:.2f})")
 
             if best_candidate:
+                # Recalculer le ratio pour l'affichage
+                transcript_text = []
+                for seg in segments:
+                    if seg['start'] >= start_time and seg['start'] <= best_candidate['time']:
+                        transcript_text.append(seg.get('text', ''))
+                transcript_len = len(normalize_for_search(' '.join(transcript_text)))
+                final_ratio = transcript_len / len(clean_text_normalized) if len(clean_text_normalized) > 0 else 0
+
                 end_time = best_candidate['time']
-                self.logger.info(f"✅ Fin choisie par couverture du texte: {end_time:.2f}s (ratio={best_coverage:.2f})")
+                self.logger.info(f"✅ Fin choisie par proximité à 1.0: {end_time:.2f}s (ratio={final_ratio:.2f}, distance={best_distance_from_1:.2f})")
             else:
-                # Fallback: prendre le dernier candidat
-                end_time = end_candidates[-1]['time']
-                self.logger.warning(f"⚠️ Aucun candidat ne couvre le texte, fallback sur dernier: {end_time:.2f}s")
+                # Fallback: prendre le PREMIER candidat (le plus proche temporellement)
+                end_time = end_candidates[0]['time']
+                self.logger.warning(f"⚠️ Aucun candidat dans la plage 0.7-1.5, utilisation du premier: {end_time:.2f}s")
         
         if start_time is None or end_time is None:
             self.logger.warning(f"Timestamps non trouvés pour: {clean_text[:80]}")
