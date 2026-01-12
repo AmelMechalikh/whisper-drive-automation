@@ -149,40 +149,158 @@ function makeDraggable(element) {
 }
 
 /**
- * Marque un segment dans le document
+ * Extrait l'ID du document depuis l'URL
  */
-function markSegment(segmentCode) {
-  const selection = window.getSelection();
+function getDocumentId() {
+  const match = window.location.href.match(/\/document\/d\/([a-zA-Z0-9-_]+)/);
+  return match ? match[1] : null;
+}
 
-  if (!selection || selection.rangeCount === 0) {
-    showNotification('⚠️ Veuillez sélectionner du texte à marquer', 'warning');
+/**
+ * Marque un segment dans le document via l'API Google Docs
+ */
+async function markSegment(segmentCode) {
+  // Afficher un message pour guider l'utilisateur
+  showNotification(`📋 Pour marquer ${segmentCode}: 1) Sélectionnez le texte 2) Copiez (Ctrl/Cmd+C) 3) Cliquez à nouveau sur ${segmentCode}`, 'info', 7000);
+
+  let selectedText = '';
+
+  try {
+    // Lire le texte du clipboard (l'utilisateur doit avoir copié avec Ctrl+C)
+    selectedText = await navigator.clipboard.readText();
+    console.log('Texte lu du clipboard:', selectedText);
+    console.log('Longueur du texte:', selectedText ? selectedText.length : 0);
+
+  } catch (error) {
+    console.error('Erreur lecture clipboard:', error);
+    showNotification('❌ Impossible de lire le clipboard. Autorisez l\'accès au clipboard.', 'error');
     return;
   }
 
-  const range = selection.getRangeAt(0);
-  const selectedText = range.toString();
+  if (!selectedText || !selectedText.trim()) {
+    showNotification('⚠️ Clipboard vide. Copiez d\'abord le texte (Ctrl/Cmd+C) puis réessayez.', 'warning', 5000);
+    console.log('selectedText est vide ou null');
+    return;
+  }
 
-  if (!selectedText.trim()) {
-    showNotification('⚠️ Aucun texte sélectionné', 'warning');
+  selectedText = selectedText.trim();
+  console.log('Texte copié:', selectedText);
+
+  // Vérifier si le texte contient déjà des balises (ex: 🎬 S1 🎬)
+  const contentMatch = selectedText.match(/🎬\s*S\d+\s*🎬\n?(.*?)\n?🎬\s*\/S\d+\s*🎬/s);
+
+  let textToSearch = selectedText; // Le texte complet à chercher dans le document
+  let contentOnly = selectedText;  // Le contenu seul (sans balises) pour créer la nouvelle version
+
+  if (contentMatch && contentMatch[1]) {
+    // Le texte a déjà des balises
+    console.log('Texte déjà marqué détecté, remplacement des balises...');
+    contentOnly = contentMatch[1].trim();
+    // On cherche le texte COMPLET avec les anciennes balises
+    textToSearch = selectedText;
+    console.log('Contenu seul:', contentOnly);
+    console.log('Texte complet à chercher:', textToSearch);
+    showNotification(`🔄 Remplacement du marqueur par ${segmentCode}...`, 'info');
+  } else {
+    // Pas de balises, c'est un nouveau marquage
+    console.log('Nouveau marquage');
+    contentOnly = selectedText;
+    textToSearch = selectedText;
+    showNotification('⏳ Insertion en cours...', 'info');
+  }
+
+  // Extraire l'ID du document
+  const documentId = getDocumentId();
+  if (!documentId) {
+    showNotification('❌ Impossible d\'obtenir l\'ID du document', 'error');
     return;
   }
 
   try {
-    // Créer le texte avec les balises
-    const markedText = `🎬 ${segmentCode} 🎬\n${selectedText}\n🎬 /${segmentCode} 🎬`;
+    // Récupérer le document via l'API
+    const docResponse = await chrome.runtime.sendMessage({
+      action: 'getDocContent',
+      documentId: documentId
+    });
 
-    // Remplacer la sélection
-    range.deleteContents();
-    const textNode = document.createTextNode(markedText);
-    range.insertNode(textNode);
+    if (!docResponse.success) {
+      throw new Error(docResponse.error);
+    }
 
-    // Déselectionner
-    selection.removeAllRanges();
+    const doc = docResponse.doc;
+
+    // Construire tout le texte du document avec les indices
+    let fullText = '';
+    let indexMap = []; // Map pour retrouver l'index réel depuis l'index dans fullText
+    const content = doc.body.content;
+
+    for (let i = 0; i < content.length; i++) {
+      const element = content[i];
+      if (element.paragraph) {
+        for (let j = 0; j < element.paragraph.elements.length; j++) {
+          const textRun = element.paragraph.elements[j];
+          if (textRun.textRun && textRun.textRun.content) {
+            const text = textRun.textRun.content;
+            const startIndex = textRun.startIndex;
+
+            // Ajouter chaque caractère avec son index réel
+            for (let k = 0; k < text.length; k++) {
+              fullText += text[k];
+              indexMap.push(startIndex + k);
+            }
+          }
+        }
+      }
+    }
+
+    // Chercher le texte directement dans fullText (sans normalisation pour éviter les problèmes d'indices)
+    const foundPosition = fullText.indexOf(textToSearch);
+
+    if (foundPosition === -1) {
+      // Essayer avec normalisation des espaces si la recherche exacte échoue
+      const normalizedFullText = fullText.replace(/\s+/g, ' ').trim();
+      const normalizedSearchText = textToSearch.replace(/\s+/g, ' ').trim();
+      const normalizedPosition = normalizedFullText.indexOf(normalizedSearchText);
+
+      if (normalizedPosition === -1) {
+        showNotification('❌ Texte non trouvé. Le texte a peut-être été modifié. Réessayez.', 'error');
+        console.log('Texte recherché:', textToSearch);
+        console.log('Texte document (début):', fullText.substring(0, 500));
+        return;
+      }
+
+      showNotification('⚠️ Impossible de trouver le texte exactement. Vérifiez manuellement.', 'warning');
+      return;
+    }
+
+    // Retrouver les vrais indices dans le document
+    const foundIndex = indexMap[foundPosition];
+    const foundEndPosition = foundPosition + textToSearch.length - 1;
+    const foundEndIndex = indexMap[foundEndPosition];
+
+    console.log('Position trouvée:', foundPosition);
+    console.log('Index document:', foundIndex, 'à', foundEndIndex);
+
+    // Créer le texte avec les balises (utiliser contentOnly, pas textToSearch)
+    const markedText = `🎬 ${segmentCode} 🎬\n${contentOnly}\n🎬 /${segmentCode} 🎬`;
+
+    // Remplacer le texte via l'API
+    const replaceResponse = await chrome.runtime.sendMessage({
+      action: 'replaceText',
+      documentId: documentId,
+      startIndex: foundIndex,
+      endIndex: foundEndIndex + 1, // +1 car endIndex est exclusif dans l'API
+      newText: markedText
+    });
+
+    if (!replaceResponse.success) {
+      throw new Error(replaceResponse.error);
+    }
 
     showNotification(`✅ Segment ${segmentCode} marqué avec succès!`, 'success');
   } catch (error) {
     console.error('Erreur lors du marquage:', error);
-    showNotification('❌ Erreur lors du marquage. Utilisez le menu Apps Script à la place.', 'error');
+    showNotification(`❌ Erreur: ${error.message}`, 'error');
   }
 }
 
@@ -230,27 +348,36 @@ function removeMarkers() {
 }
 
 /**
- * Marque le document comme prêt pour le découpage
+ * Marque le document comme prêt pour le découpage via l'API
  */
-function markAsReady() {
-  try {
-    // Créer un range à la fin du document
-    const selection = window.getSelection();
-    selection.removeAllRanges();
+async function markAsReady() {
+  // Extraire l'ID du document
+  const documentId = getDocumentId();
+  if (!documentId) {
+    showNotification('❌ Impossible d\'obtenir l\'ID du document', 'error');
+    return;
+  }
 
+  showNotification('⏳ Ajout de la balise READY...', 'info');
+
+  try {
     // Insérer la balise READY à la fin
     const readyMarker = '\n\n🎬 READY 🎬\n';
 
-    // Note: L'insertion à la fin du document est complexe avec Google Docs
-    // On copie le marqueur dans le presse-papiers pour que l'utilisateur le colle
-    navigator.clipboard.writeText(readyMarker).then(() => {
-      showNotification('✅ Balise READY copiée! Collez-la à la fin du document (Ctrl+V)', 'success');
-    }).catch(() => {
-      showNotification('💡 Copiez cette balise à la fin du document: 🎬 READY 🎬', 'info');
+    const response = await chrome.runtime.sendMessage({
+      action: 'insertTextAtEnd',
+      documentId: documentId,
+      text: readyMarker
     });
+
+    if (!response.success) {
+      throw new Error(response.error);
+    }
+
+    showNotification('✅ Document marqué comme PRÊT! Le traitement va commencer automatiquement.', 'success');
   } catch (error) {
     console.error('Erreur:', error);
-    showNotification('💡 Ajoutez cette balise à la fin du document: 🎬 READY 🎬', 'info');
+    showNotification(`❌ Erreur: ${error.message}`, 'error');
   }
 }
 
@@ -264,7 +391,7 @@ function checkStatus() {
 /**
  * Affiche une notification
  */
-function showNotification(message, type = 'info') {
+function showNotification(message, type = 'info', duration = 3000) {
   // Supprimer les notifications existantes
   const existing = document.querySelectorAll('.vsm-notification');
   existing.forEach(n => n.remove());
@@ -276,11 +403,11 @@ function showNotification(message, type = 'info') {
 
   document.body.appendChild(notification);
 
-  // Retirer après 3 secondes
+  // Retirer après la durée spécifiée
   setTimeout(() => {
     notification.style.opacity = '0';
     setTimeout(() => notification.remove(), 300);
-  }, 3000);
+  }, duration);
 }
 
 // Réinjecter l'extension si la page change (Google Docs est une SPA)

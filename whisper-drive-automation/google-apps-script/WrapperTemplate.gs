@@ -73,3 +73,11 @@ function retirerMarqueurs() {
 function listerSegments() {
   MarqueurSegmentsVideo.listerSegments();
 }
+
+function marquerCommePret() {
+  MarqueurSegmentsVideo.marquerCommePret();
+}
+
+function verifierStatut() {
+  MarqueurSegmentsVideo.verifierStatut();
+}

@@ -8,6 +8,8 @@ import os
 import sys
 import json
 import logging
+import time
+from datetime import datetime
 from pathlib import Path
 from flask import Flask, request, jsonify
 
@@ -19,8 +21,16 @@ from drive_manager import DriveManager
 from highlight_extractor import HighlightExtractor
 from video_segment_extractor import VideoSegmentExtractor
 
+# Import pour gérer la VM
+from google.cloud import compute_v1
+
 app = Flask(__name__)
 logger = logging.getLogger(__name__)
+
+# Configuration VM
+PROJECT_ID = "artificial-intelligence-cmk"
+ZONE = "europe-west1-b"
+VM_NAME = "highlights-worker-vm"
 
 
 class HighlightsProcessor:
@@ -78,7 +88,7 @@ class HighlightsProcessor:
 
             # Skip si déjà traité dans cette instance
             if file_info['id'] in self.processed_files:
-                logger.debug(f"⏭️  Ignoré (déjà traité): {file_info['name']}")
+                logger.info(f"⏭️  Ignoré (déjà traité dans cette instance): {file_info['name']}")
                 continue
 
             # Extraire le nom de base pour vérifier si Excel existe déjà
@@ -141,10 +151,13 @@ class HighlightsProcessor:
                     result.append(file_info)
                     logger.info(f"✅ Trouvé: {file_info['name']} (marqué PRÊT)")
                 else:
-                    logger.debug(f"⏭️  Ignoré (pas de balise READY): {file_info['name']}")
+                    logger.info(f"⏭️  Ignoré (pas de balise READY): {file_info['name']}")
+                    logger.info(f"   Texte début: {text[:200]}")
 
             except Exception as e:
-                logger.warning(f"Erreur vérification balise READY pour {file_info['name']}: {e}")
+                logger.info(f"❌ Erreur vérification balise READY pour {file_info['name']}: {e}")
+                import traceback
+                logger.info(f"   Traceback: {traceback.format_exc()}")
 
         return result
     
@@ -294,7 +307,7 @@ class HighlightsProcessor:
                 logger.info("🎬 Utilisation de la méthode: balises inline")
                 excel_path = self.highlight_extractor.extract_highlights_from_inline_markers(
                     document_id=file_id,
-                    credentials_path=str(Path(__file__).parent.parent / 'config' / 'credentials.json'),
+                    credentials_path=self.credentials_path,
                     complete_json_path=str(complete_json_path),
                     output_excel_path=str(output_excel_path)
                 )
@@ -343,68 +356,57 @@ class HighlightsProcessor:
             return None
     
     def process_excel_file(self, excel_info: dict):
-        """Traite un Excel → découpe les vidéos"""
+        """Crée un job pour traiter un Excel → la VM s'en occupera"""
         excel_name = excel_info['name']
         excel_id = excel_info['id']
         base_name = excel_name.replace('_highlights.xlsx', '')
-        
-        logger.info(f"🎬 Traitement Excel: {excel_name}")
-        
-        try:
-            # 1. Télécharger l'Excel
-            excel_path = self.temp_dir / excel_name
-            self.drive_manager.download_file(excel_id, excel_name, str(excel_path))
 
-            # 2. Trouver la vidéo source
+        logger.info(f"🎬 Création job pour Excel: {excel_name}")
+
+        try:
+            # 1. Trouver la vidéo source
             source_file = self._find_source_video(base_name)
             if not source_file:
                 logger.warning(f"⚠️ Vidéo source non trouvée pour: {base_name}")
                 return None
-            
-            # 3. Télécharger la vidéo
-            source_ext = Path(source_file['name']).suffix
-            source_path = self.temp_dir / f"{base_name}{source_ext}"
-            logger.info(f"📥 Téléchargement: {source_file['name']}")
-            self.drive_manager.download_file(source_file['id'], source_file['name'], str(source_path))
-            
-            # 4. Créer dossier pour les segments
-            segments_folder = self.temp_dir / f"{base_name}_segments"
-            segments_folder.mkdir(exist_ok=True)
-            
-            # 5. Découper les segments
-            logger.info(f"✂️ Découpage des segments...")
-            created_segments = self.video_extractor.extract_segments(
-                str(excel_path),
-                str(source_path),
-                str(segments_folder)
+
+            # 2. Créer le job JSON
+            job_data = {
+                'excel_id': excel_id,
+                'excel_name': excel_name,
+                'source_id': source_file['id'],
+                'source_name': source_file['name'],
+                'base_name': base_name,
+                'created_at': datetime.now().isoformat()
+            }
+
+            # 3. Uploader le job dans queue_highlights
+            job_filename = f"highlight_job_{base_name}_{int(time.time())}.json"
+            job_local_path = self.temp_dir / job_filename
+
+            with open(job_local_path, 'w') as f:
+                json.dump(job_data, f, indent=2)
+
+            queue_folder = self.config['drive_folders']['queue_highlights']
+            job_id = self.drive_manager.upload_file(
+                str(job_local_path),
+                job_filename,
+                queue_folder
             )
-            
-            if not created_segments:
-                logger.warning(f"⚠️ Aucun segment créé")
-                return None
-            
-            # 6. Créer sous-dossier sur Drive
-            subfolder_id = self._get_or_create_subfolder(base_name)
-            
-            # 7. Upload les segments
-            logger.info(f"📤 Upload des segments...")
-            for segment_path in created_segments:
-                segment_name = Path(segment_path).name
-                self.drive_manager.upload_file(
-                    segment_path,
-                    segment_name,
-                    subfolder_id
-                )
-            
-            logger.info(f"✅ {len(created_segments)} segment(s) uploadé(s)")
-            
-            # 8. Nettoyer
-            self._cleanup_files(base_name)
-            
-            return len(created_segments)
-            
+
+            # Nettoyer le fichier local
+            job_local_path.unlink()
+
+            logger.info(f"✅ Job créé: {job_filename}")
+            logger.info(f"   Vidéo: {source_file['name']} (sera traitée par la VM)")
+
+            # Marquer comme traité pour ne pas recréer le job
+            self.processed_files.add(excel_id)
+
+            return 1  # 1 job créé
+
         except Exception as e:
-            logger.error(f"❌ Erreur traitement Excel {excel_name}: {e}")
+            logger.error(f"❌ Erreur création job pour {excel_name}: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -463,7 +465,48 @@ class HighlightsProcessor:
             except Exception as e:
                 logger.warning(f"Erreur nettoyage {file}: {e}")
                 logger.warning(f"Erreur nettoyage {file}: {e}")
-    
+
+    def start_vm_if_needed(self):
+        """Démarre la VM highlights si elle est arrêtée"""
+        try:
+            logger.info(f"🔍 Vérification état de la VM {VM_NAME}...")
+
+            # Créer un client Compute Engine
+            instances_client = compute_v1.InstancesClient()
+
+            # Récupérer l'état de la VM
+            instance = instances_client.get(
+                project=PROJECT_ID,
+                zone=ZONE,
+                instance=VM_NAME
+            )
+
+            vm_status = instance.status
+            logger.info(f"📊 État VM: {vm_status}")
+
+            if vm_status == 'TERMINATED':
+                logger.info(f"🚀 Démarrage de la VM {VM_NAME}...")
+
+                # Démarrer la VM avec l'API
+                operation = instances_client.start(
+                    project=PROJECT_ID,
+                    zone=ZONE,
+                    instance=VM_NAME
+                )
+
+                logger.info(f"✅ Commande de démarrage envoyée - Operation: {operation.name}")
+                logger.info(f"💡 La VM démarrera et le worker s'auto-lancera. Auto-shutdown après 10 min d'inactivité.")
+
+            elif vm_status == 'RUNNING':
+                logger.info(f"✅ VM {VM_NAME} déjà en cours d'exécution")
+            else:
+                logger.warning(f"⚠️  État VM inattendu: {vm_status}")
+
+        except Exception as vm_error:
+            logger.warning(f"⚠️  Erreur gestion VM: {vm_error}")
+            import traceback
+            logger.warning(traceback.format_exc())
+
     def process(self) -> dict:
         """
         Processus principal de traitement
@@ -504,7 +547,12 @@ class HighlightsProcessor:
                         self.processed_files.add(excel_info['id'])
                 except Exception as e:
                     result['errors'].append(f"Excel file {excel_info['name']}: {str(e)}")
-            
+
+            # 3. Démarrer la VM si des jobs ont été créés
+            if result['excel_files_processed'] > 0:
+                logger.info(f"📥 {result['excel_files_processed']} job(s) créé(s) - démarrage de la VM...")
+                self.start_vm_if_needed()
+
             if result['errors']:
                 result['status'] = 'partial_success'
             

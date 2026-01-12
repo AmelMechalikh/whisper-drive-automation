@@ -31,8 +31,11 @@ function onOpen() {
     .addSeparator()
     .addItem('Marquer segment personnalisé...', 'marquerPersonnalise')
     .addSeparator()
-    .addItem('Retirer les marqueurs', 'retirerMarqueurs')
     .addItem('Lister les segments', 'listerSegments')
+    .addItem('Retirer les marqueurs', 'retirerMarqueurs')
+    .addSeparator()
+    .addItem('✅ Marquer comme PRÊT pour découpage', 'marquerCommePret')
+    .addItem('📊 Vérifier le statut', 'verifierStatut')
     .addToUi();
 }
 
@@ -208,6 +211,114 @@ function listerSegments() {
   }
 
   message += '\n💡 Chaque segment doit avoir 2 marqueurs (début et fin)';
+
+  DocumentApp.getUi().alert(message);
+}
+
+/**
+ * Marque le document comme prêt pour le découpage vidéo
+ */
+function marquerCommePret() {
+  var ui = DocumentApp.getUi();
+  var doc = DocumentApp.getActiveDocument();
+  var body = doc.getBody();
+  var text = body.getText();
+
+  // Vérifier si déjà marqué comme prêt
+  if (text.indexOf('🎬 READY 🎬') !== -1) {
+    var result = ui.alert(
+      'Document déjà marqué',
+      'Ce document est déjà marqué comme PRÊT. Voulez-vous le marquer à nouveau?',
+      ui.ButtonSet.YES_NO
+    );
+
+    if (result !== ui.Button.YES) {
+      return;
+    }
+
+    // Retirer l'ancienne balise READY
+    var paragraphs = body.getParagraphs();
+    for (var i = 0; i < paragraphs.length; i++) {
+      var para = paragraphs[i];
+      var paraText = para.getText();
+      if (/🎬\s*READY\s*🎬/.test(paraText)) {
+        para.setText(paraText.replace(/🎬\s*READY\s*🎬\n?/g, ''));
+      }
+    }
+  }
+
+  // Vérifier qu'il y a des segments
+  var startPattern = /🎬\s*S\d+\s*🎬/g;
+  var segments = [];
+  var match;
+
+  while ((match = startPattern.exec(text)) !== null) {
+    segments.push(match[1]);
+  }
+
+  if (segments.length === 0) {
+    ui.alert('⚠️ Aucun segment trouvé!\n\nVeuillez d\'abord marquer des segments (S1, S2, etc.) avant de marquer le document comme prêt.');
+    return;
+  }
+
+  // Ajouter la balise READY à la fin du document
+  body.appendParagraph('\n🎬 READY 🎬\n');
+
+  ui.alert('✅ Document marqué comme PRÊT!\n\nLe système backend traitera ce document automatiquement et générera les extraits vidéo.');
+}
+
+/**
+ * Vérifie le statut du document
+ */
+function verifierStatut() {
+  var doc = DocumentApp.getActiveDocument();
+  var body = doc.getBody();
+  var text = body.getText();
+
+  // Compter les segments
+  var startPattern = /🎬\s*(S\d+)\s*🎬/g;
+  var endPattern = /🎬\s*\/(S\d+)\s*🎬/g;
+
+  var segmentsDebut = [];
+  var segmentsFin = [];
+  var match;
+
+  while ((match = startPattern.exec(text)) !== null) {
+    segmentsDebut.push(match[1]);
+  }
+
+  while ((match = endPattern.exec(text)) !== null) {
+    segmentsFin.push(match[1]);
+  }
+
+  // Vérifier le statut READY ou PROCESSED
+  var estPret = text.indexOf('🎬 READY 🎬') !== -1;
+  var estTraite = text.indexOf('🎬 PROCESSED 🎬') !== -1;
+
+  // Construire le message
+  var message = '📊 STATUT DU DOCUMENT\n\n';
+
+  if (estTraite) {
+    message += '✅ Statut: TRAITÉ (découpage terminé)\n\n';
+  } else if (estPret) {
+    message += '⏳ Statut: PRÊT (en attente de traitement)\n\n';
+  } else {
+    message += '📝 Statut: EN COURS (pas encore prêt)\n\n';
+  }
+
+  message += '📋 Segments:\n';
+  message += '  • Marqueurs de début: ' + segmentsDebut.length + '\n';
+  message += '  • Marqueurs de fin: ' + segmentsFin.length + '\n';
+
+  if (segmentsDebut.length !== segmentsFin.length) {
+    message += '\n⚠️ ATTENTION: Le nombre de marqueurs de début et de fin ne correspond pas!';
+  } else if (segmentsDebut.length > 0) {
+    message += '\n✅ Tous les segments ont leurs marqueurs début/fin';
+  }
+
+  if (!estPret && segmentsDebut.length > 0) {
+    message += '\n\n💡 Cliquez sur "✅ Marquer comme PRÊT" quand vous avez terminé.';
+  }
 
   DocumentApp.getUi().alert(message);
 }
