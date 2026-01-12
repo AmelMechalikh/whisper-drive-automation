@@ -639,6 +639,7 @@ def load_config():
     # Chercher dans plusieurs emplacements possibles
     possible_paths = [
         Path('/app/config/highlight_config.json'),  # Cloud Run
+        Path('/opt/highlights-worker/config/highlight_config.json'),  # VM
         Path(__file__).parent.parent / 'config' / 'highlight_config.json',  # Local
     ]
     
