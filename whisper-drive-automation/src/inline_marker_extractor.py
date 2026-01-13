@@ -10,6 +10,7 @@ import logging
 from typing import List, Dict, Tuple, Optional
 from pathlib import Path
 from google.oauth2.service_account import Credentials
+from google.auth import default as get_default_credentials
 from googleapiclient.discovery import build
 
 
@@ -39,13 +40,16 @@ class InlineMarkerExtractor:
             Liste de dict avec 'segment_id', 'text', 'start_pos', 'end_pos'
         """
         # Initialiser l'API Docs
-        creds = Credentials.from_service_account_file(
-            credentials_path,
-            scopes=[
-                'https://www.googleapis.com/auth/drive.readonly',
-                'https://www.googleapis.com/auth/documents.readonly'
-            ]
-        )
+        scopes = [
+            'https://www.googleapis.com/auth/drive.readonly',
+            'https://www.googleapis.com/auth/documents.readonly'
+        ]
+
+        if credentials_path:
+            creds = Credentials.from_service_account_file(credentials_path, scopes=scopes)
+        else:
+            # Utiliser les credentials par défaut (Cloud Run / GCE)
+            creds, _ = get_default_credentials(scopes=scopes)
 
         docs_service = build('docs', 'v1', credentials=creds)
 
@@ -101,7 +105,8 @@ class InlineMarkerExtractor:
 
     def _parse_segments(self, text: str) -> List[Dict]:
         """
-        Parse le texte pour trouver les segments marqués
+        Parse le texte pour trouver les segments marqués (version robuste)
+        Tolérant aux erreurs: espaces manquants, balises imbriquées, etc.
 
         Args:
             text: Texte complet du document
@@ -109,21 +114,36 @@ class InlineMarkerExtractor:
         Returns:
             Liste de segments avec leur ID et contenu
         """
+        from collections import defaultdict
+
         segments = []
 
-        # Trouver toutes les balises de début
+        # Trouver toutes les balises d'ouverture
         start_matches = list(re.finditer(self.MARKER_START_PATTERN, text))
 
+        # Trouver toutes les balises de fermeture
+        end_matches = list(re.finditer(self.MARKER_END_PATTERN, text))
+
+        # Créer un index des fermetures par segment ID
+        closes_by_id = defaultdict(list)
+        for match in end_matches:
+            segment_id = match.group(1)
+            closes_by_id[segment_id].append(match)
+
+        # Pour chaque ouverture, trouver la fermeture correspondante
         for start_match in start_matches:
             segment_id = start_match.group(1)  # Ex: S1, S2, etc.
             start_pos = start_match.end()  # Position après la balise de début
 
-            # Chercher la balise de fin correspondante
-            end_pattern = r'🎬\s*/' + re.escape(segment_id) + r'\s*🎬'
-            end_match = re.search(end_pattern, text[start_pos:])
+            # Chercher la première fermeture de ce segment APRÈS cette ouverture
+            matching_close = None
+            for close_match in closes_by_id.get(segment_id, []):
+                if close_match.start() > start_pos:
+                    matching_close = close_match
+                    break
 
-            if end_match:
-                end_pos = start_pos + end_match.start()
+            if matching_close:
+                end_pos = matching_close.start()
                 segment_text = text[start_pos:end_pos].strip()
 
                 # Nettoyer le texte (retirer timestamps au format (XX:XX))
@@ -134,7 +154,7 @@ class InlineMarkerExtractor:
                     'text': clean_text,
                     'raw_text': segment_text,
                     'start_pos': start_match.start(),
-                    'end_pos': start_pos + end_match.end()
+                    'end_pos': matching_close.end()
                 })
 
                 self.logger.debug(f"Segment {segment_id}: {len(clean_text)} caractères")
