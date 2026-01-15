@@ -201,33 +201,24 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
         source_path.unlink()
         logger.info(f"✅ Vidéo source supprimée")
 
-        # 5. Créer sous-dossier sur Drive
-        subfolder_name = f"{base_name}_segments"
+        # 5. Créer sous-dossier sur Drive avec timestamp
+        timestamp = datetime.now().strftime('%Y-%m-%d_%Hh%Mm%Ss')
+        subfolder_name = f"{base_name}_segments_{timestamp}"
         segments_output_folder = config['drive_folders']['segments_output']
 
-        # Chercher si le sous-dossier existe
-        existing = drive_manager.list_files_in_folder(
-            segments_output_folder,
-            name_pattern=subfolder_name
-        )
-
-        if existing:
-            subfolder_id = existing[0]['id']
-            logger.info(f"📁 Sous-dossier existant: {subfolder_name}")
-        else:
-            # Créer le sous-dossier
-            folder_metadata = {
-                'name': subfolder_name,
-                'mimeType': 'application/vnd.google-apps.folder',
-                'parents': [segments_output_folder]
-            }
-            folder = drive_manager.service.files().create(
-                body=folder_metadata,
-                fields='id',
-                supportsAllDrives=True
-            ).execute()
-            subfolder_id = folder['id']
-            logger.info(f"📁 Sous-dossier créé: {subfolder_name}")
+        # Créer le sous-dossier avec timestamp unique
+        folder_metadata = {
+            'name': subfolder_name,
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [segments_output_folder]
+        }
+        folder = drive_manager.service.files().create(
+            body=folder_metadata,
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
+        subfolder_id = folder['id']
+        logger.info(f"📁 Sous-dossier créé: {subfolder_name}")
 
         # 6. Upload les segments (et les supprimer un par un pour économiser la RAM)
         logger.info(f"📤 Upload des segments...")

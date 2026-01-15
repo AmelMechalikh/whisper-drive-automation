@@ -86,11 +86,6 @@ class HighlightsProcessor:
                 logger.debug(f"⏭️  Ignoré (type non supporté): {file_info['name']}")
                 continue
 
-            # Skip si déjà traité dans cette instance
-            if file_info['id'] in self.processed_files:
-                logger.info(f"⏭️  Ignoré (déjà traité dans cette instance): {file_info['name']}")
-                continue
-
             # Extraire le nom de base pour vérifier si Excel existe déjà
             base_name_check = file_info['name']
             for suffix in ['_paragraphs_timestamps.txt', '_paragraphs_timestamps', '__paragraphs_timestamps.txt', '__paragraphs_timestamps']:
@@ -106,7 +101,6 @@ class HighlightsProcessor:
             )
             if existing_excel:
                 logger.info(f"⏭️  Ignoré (Excel existe déjà): {file_info['name']} → {excel_name}")
-                self.processed_files.add(file_info['id'])  # Marquer comme traité
                 continue
 
             # Vérifier si le fichier a la balise READY
@@ -144,7 +138,6 @@ class HighlightsProcessor:
 
                 if has_processed:
                     logger.info(f"⏭️  Ignoré (déjà traité - balise PROCESSED): {file_info['name']}")
-                    self.processed_files.add(file_info['id'])
                     continue
 
                 if has_ready:
@@ -164,41 +157,42 @@ class HighlightsProcessor:
     def check_new_excel_files(self) -> list:
         """
         Vérifie s'il y a de nouveaux fichiers Excel non traités
-        
+
         Returns:
             Liste des fichiers Excel non traités
         """
         logger.info("🔍 Vérification Excel files...")
-        
+
         excel_files = self.drive_manager.list_files_in_folder(
             self.config['drive_folders']['excel_output'],
             name_pattern='_highlights.xlsx'
         )
-        
+
         result = []
         for excel_file in excel_files:
             # Skip si déjà traité dans cette instance
             if excel_file['id'] in self.processed_files:
                 continue
-            
+
             base_name = excel_file['name'].replace('_highlights.xlsx', '')
-            
-            # Chercher un sous-dossier correspondant dans Segments Videos
+
+            # Chercher un sous-dossier commençant par base_name_segments
+            # (car maintenant on ajoute un timestamp: base_name_segments_2026-01-15_15h30m45s)
             segments_folders = self.drive_manager.list_files_in_folder(
                 self.config['drive_folders']['segments_output'],
-                name_pattern=base_name
+                name_pattern=f"{base_name}_segments"
             )
-            
+
             # Si pas de dossier trouvé, le fichier n'a pas été traité
             folder_exists = any(
-                f.get('mimeType') == 'application/vnd.google-apps.folder' 
+                f.get('mimeType') == 'application/vnd.google-apps.folder'
                 for f in segments_folders
             )
-            
+
             if not folder_exists:
                 result.append(excel_file)
                 logger.info(f"✅ Trouvé: {excel_file['name']} (non traité)")
-        
+
         return result
 
     def mark_as_processed(self, file_id: str, mime_type: str):
@@ -510,10 +504,13 @@ class HighlightsProcessor:
     def process(self) -> dict:
         """
         Processus principal de traitement
-        
+
         Returns:
             dict avec le statut et les statistiques
         """
+        # Réinitialiser l'état à chaque appel pour ne pas garder la mémoire entre les triggers
+        self.processed_files = set()
+
         result = {
             'status': 'success',
             'highlighted_files_processed': 0,
@@ -654,32 +651,39 @@ def load_config():
 def init_processor():
     """Initialise le processor au démarrage du Cloud Run"""
     global processor, logger
-    
+
     logger = setup_logging()
     logger.info("🚀 Initialisation du Highlights Processor...")
-    
-    # Chercher credentials dans plusieurs emplacements
-    possible_creds = [
-        Path('/app/config/credentials.json'),  # Cloud Run
-        Path('/opt/highlights-worker/config/credentials.json'),  # VM
-        Path(__file__).parent.parent / 'config' / 'credentials.json',  # Local
-    ]
-    
+
+    # Déterminer si on est sur Cloud Run (variable K_SERVICE)
+    is_cloud_run = os.getenv('K_SERVICE') is not None
+
     credentials_path = None
-    for path in possible_creds:
-        if path.exists():
-            credentials_path = path
-            break
-    
-    if not credentials_path:
-        raise FileNotFoundError(f"credentials.json introuvable dans: {[str(p) for p in possible_creds]}")
-    
+    if is_cloud_run:
+        # Sur Cloud Run, utiliser les credentials par défaut (service account)
+        logger.info("🔐 Cloud Run détecté - utilisation des credentials par défaut")
+    else:
+        # Chercher credentials dans plusieurs emplacements
+        possible_creds = [
+            Path('/opt/highlights-worker/config/credentials.json'),  # VM
+            Path(__file__).parent.parent / 'config' / 'credentials.json',  # Local
+        ]
+
+        for path in possible_creds:
+            if path.exists():
+                credentials_path = str(path)
+                logger.info(f"🔐 Credentials trouvés: {credentials_path}")
+                break
+
+        if not credentials_path:
+            raise FileNotFoundError(f"credentials.json introuvable dans: {[str(p) for p in possible_creds]}")
+
     # Charger la configuration
     config = load_config()
-    
+
     # Initialiser le processor
-    processor = HighlightsProcessor(config, str(credentials_path))
-    
+    processor = HighlightsProcessor(config, credentials_path)
+
     logger.info("✅ Processor initialisé")
 
 
