@@ -1,6 +1,6 @@
 """
 Module de génération des fichiers de sortie
-Formats: TXT, SRT, JSON, Word timestamps, Paragraphs
+Formats: TXT, SRT, JSON, Word timestamps, Paragraphs (Google Docs)
 """
 import json
 import logging
@@ -9,16 +9,20 @@ from datetime import timedelta
 
 class OutputGenerator:
     """Générateur de fichiers de sortie pour les transcriptions"""
-    
-    def __init__(self, output_dir='transcriptions_output'):
+
+    def __init__(self, output_dir='transcriptions_output', drive_manager=None, output_folder_id=None):
         """
         Initialise le générateur de sortie
-        
+
         Args:
             output_dir: Dossier de sortie local
+            drive_manager: Instance de DriveManager (pour créer des Google Docs)
+            output_folder_id: ID du dossier Drive pour les Google Docs
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True)
+        self.drive_manager = drive_manager
+        self.output_folder_id = output_folder_id
         self.logger = logging.getLogger(__name__)
     
     def generate_all_outputs(self, base_filename, whisper_result, paragraphs=None):
@@ -161,31 +165,92 @@ class OutputGenerator:
         return str(file_path)
     
     def _generate_paragraphs_timestamps(self, base_filename, paragraphs):
-        """Génère le fichier avec format court: (M:SS) texte (M:SS) texte sur la même ligne"""
-        filename = f"{base_filename}_paragraphs_timestamps.txt"
-        file_path = self.output_dir / filename
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            for paragraph in paragraphs:
-                # Construire une ligne avec plusieurs segments et leurs timestamps
-                line_parts = []
-                
-                if 'segments' in paragraph:
-                    for segment in paragraph['segments']:
-                        timestamp = self._seconds_to_simple_timestamp(segment['start'])
-                        text = segment['text'].strip()
-                        line_parts.append(f"({timestamp}) {text}")
-                else:
-                    # Format alternatif : paragraphe simple avec un timestamp
-                    timestamp = self._seconds_to_simple_timestamp(paragraph['start'])
-                    text = paragraph['text'].strip()
+        """
+        Génère le fichier paragraphs_timestamps
+        Crée directement un Google Doc si drive_manager est disponible, sinon fichier local
+        """
+        # Construire le contenu
+        content_lines = []
+        for paragraph in paragraphs:
+            line_parts = []
+
+            if 'segments' in paragraph:
+                for segment in paragraph['segments']:
+                    timestamp = self._seconds_to_simple_timestamp(segment['start'])
+                    text = segment['text'].strip()
                     line_parts.append(f"({timestamp}) {text}")
-                
-                # Écrire tous les segments du paragraphe sur la même ligne, séparés par des espaces
-                f.write(' '.join(line_parts) + '\n\n')
-        
-        self.logger.info(f"📝 Paragraphes avec timestamps sauvés: {file_path}")
-        return str(file_path)
+            else:
+                # Format alternatif : paragraphe simple avec un timestamp
+                timestamp = self._seconds_to_simple_timestamp(paragraph['start'])
+                text = paragraph['text'].strip()
+                line_parts.append(f"({timestamp}) {text}")
+
+            # Ajouter la ligne avec tous les segments
+            content_lines.append(' '.join(line_parts))
+
+        full_content = '\n\n'.join(content_lines)
+
+        # Si drive_manager est disponible, créer un Google Doc
+        if self.drive_manager and self.output_folder_id:
+            doc_name = f"{base_filename}_paragraphs_timestamps"
+            doc_id = self._create_google_doc(doc_name, full_content)
+            self.logger.info(f"📝 Google Doc créé: {doc_name} (ID: {doc_id})")
+            # Retourner un format qui indique que c'est un Google Doc
+            return f"gdoc:{doc_id}"
+        else:
+            # Fallback: créer un fichier local .txt
+            filename = f"{base_filename}_paragraphs_timestamps.txt"
+            file_path = self.output_dir / filename
+
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(full_content)
+
+            self.logger.info(f"📝 Paragraphes avec timestamps sauvés: {file_path}")
+            return str(file_path)
+
+    def _create_google_doc(self, doc_name, content):
+        """
+        Crée un Google Doc avec le contenu spécifié
+
+        Args:
+            doc_name: Nom du document
+            content: Contenu texte du document
+
+        Returns:
+            str: ID du document créé
+        """
+        from googleapiclient.discovery import build
+
+        # Créer le document vide
+        doc_metadata = {
+            'name': doc_name,
+            'mimeType': 'application/vnd.google-apps.document',
+            'parents': [self.output_folder_id]
+        }
+
+        doc = self.drive_manager.service.files().create(
+            body=doc_metadata,
+            supportsAllDrives=True
+        ).execute()
+
+        doc_id = doc['id']
+
+        # Insérer le contenu via l'API Docs
+        docs_service = build('docs', 'v1', credentials=self.drive_manager.creds)
+
+        requests = [{
+            'insertText': {
+                'location': {'index': 1},
+                'text': content
+            }
+        }]
+
+        docs_service.documents().batchUpdate(
+            documentId=doc_id,
+            body={'requests': requests}
+        ).execute()
+
+        return doc_id
     
     def _seconds_to_simple_timestamp(self, seconds):
         """Convertit secondes en format M:SS (sans zéros inutiles)"""

@@ -116,9 +116,13 @@ class WhisperDriveProcessor:
             if 'vocabulary' in whisper_config:
                 self.transcriber.vocabulary = whisper_config['vocabulary']
             
-            # Output Generator
-            self.output_generator = OutputGenerator()
-            
+            # Output Generator - passer le drive_manager pour créer des Google Docs
+            output_folder_id = self.config.DRIVE_FOLDERS.get('output')
+            self.output_generator = OutputGenerator(
+                drive_manager=self.drive_manager,
+                output_folder_id=output_folder_id
+            )
+
             self.logger.info("✅ Configuration terminée")
             
         except Exception as e:
@@ -432,7 +436,14 @@ class WhisperDriveProcessor:
                 skipped.append(file_type)
                 continue
 
-            # Vérification 2: Le fichier existe-t-il localement?
+            # Vérification 2: Est-ce déjà un Google Doc? (préfixe "gdoc:")
+            if isinstance(file_path, str) and file_path.startswith("gdoc:"):
+                doc_id = file_path.split(":", 1)[1]
+                self.logger.info(f"✅ Google Doc déjà créé: {file_type} (ID: {doc_id})")
+                uploaded.append(file_type)
+                continue
+
+            # Vérification 3: Le fichier existe-t-il localement?
             if not os.path.exists(file_path):
                 self.logger.error(f"❌ Fichier {file_type} n'existe pas: {file_path}")
                 self._log_upload_error(file_type, file_path, "File not found locally")
@@ -622,11 +633,16 @@ class WhisperDriveProcessor:
                     os.rmdir(temp_dir)
                 except:
                     pass
-            
+
             # Supprimer les fichiers de sortie locaux
             for file_path in output_files.values():
+                # Ignorer les Google Docs (préfixe "gdoc:")
+                if file_path and isinstance(file_path, str) and file_path.startswith("gdoc:"):
+                    continue
+
+                # Supprimer les fichiers locaux
                 if file_path and os.path.exists(file_path):
                     os.remove(file_path)
-            
+
         except Exception as e:
             self.logger.warning(f"⚠️  Erreur nettoyage fichiers: {e}")
