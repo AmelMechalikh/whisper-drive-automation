@@ -155,46 +155,53 @@ class DriveManager:
             self.logger.error(f"❌ Erreur listage fichiers: {e}")
             return []
     
+    @retry_on_failure(max_retries=3, backoff_factor=2)
     def download_file(self, file_id, file_name, download_path):
         """
-        Télécharge un fichier depuis Drive
-        
+        Télécharge un fichier depuis Drive avec retry automatique
+
         Args:
             file_id: ID du fichier Drive
             file_name: Nom du fichier
             download_path: Chemin local de destination
-        
+
         Returns:
-            str: Chemin du fichier téléchargé ou None si erreur
+            str: Chemin du fichier téléchargé
+
+        Raises:
+            Exception: Si le téléchargement échoue après tous les retries
         """
-        try:
-            self.logger.info(f"📥 Téléchargement: {file_name}")
-            
-            # Créer le dossier de destination
-            os.makedirs(os.path.dirname(download_path), exist_ok=True)
-            
-            # Téléchargement
-            request = self.service.files().get_media(
-                fileId=file_id,
-                supportsAllDrives=True
-            )
-            
-            with open(download_path, 'wb') as file_handle:
-                downloader = MediaIoBaseDownload(file_handle, request)
-                done = False
-                while done is False:
-                    status, done = downloader.next_chunk()
-                    if status:
-                        progress = int(status.progress() * 100)
-                        if progress % 20 == 0:  # Log tous les 20%
-                            self.logger.info(f"📥 Téléchargement: {progress}%")
-            
-            self.logger.info(f"✅ Fichier téléchargé: {file_name}")
-            return download_path
-            
-        except Exception as e:
-            self.logger.error(f"❌ Erreur téléchargement {file_name}: {e}")
-            return None
+        self.logger.info(f"📥 Téléchargement: {file_name}")
+
+        # Créer le dossier de destination
+        os.makedirs(os.path.dirname(download_path), exist_ok=True)
+
+        # Téléchargement
+        request = self.service.files().get_media(
+            fileId=file_id,
+            supportsAllDrives=True
+        )
+
+        with open(download_path, 'wb') as file_handle:
+            downloader = MediaIoBaseDownload(file_handle, request)
+            done = False
+            while done is False:
+                status, done = downloader.next_chunk()
+                if status:
+                    progress = int(status.progress() * 100)
+                    if progress % 20 == 0:  # Log tous les 20%
+                        self.logger.info(f"📥 Téléchargement: {progress}%")
+
+        # Vérifier que le fichier existe et n'est pas vide
+        if not os.path.exists(download_path):
+            raise FileNotFoundError(f"Fichier non créé: {download_path}")
+
+        file_size = os.path.getsize(download_path)
+        if file_size == 0:
+            raise Exception(f"Fichier téléchargé est vide: {download_path}")
+
+        self.logger.info(f"✅ Fichier téléchargé: {file_name} ({file_size} bytes)")
+        return download_path
     
     @retry_on_failure(max_retries=3, backoff_factor=2)
     def upload_file(self, local_path, drive_filename, folder_id):

@@ -14,6 +14,57 @@ from .drive_manager import DriveManager
 from .whisper_transcriber import WhisperTranscriber
 from .output_generator import OutputGenerator
 
+
+class CheckpointManager:
+    """Gère les checkpoints pour reprendre après échec"""
+
+    def __init__(self, checkpoint_dir='/tmp/whisper_checkpoints'):
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.checkpoint_dir.mkdir(exist_ok=True, parents=True)
+        self.logger = logging.getLogger(__name__)
+
+    def _get_checkpoint_path(self, file_name, step):
+        """Retourne le chemin du checkpoint pour un fichier et une étape"""
+        safe_name = file_name.replace('/', '_').replace(' ', '_')
+        return self.checkpoint_dir / f"{safe_name}_{step}.json"
+
+    def save_checkpoint(self, file_name, step, data):
+        """Sauvegarde un checkpoint"""
+        try:
+            checkpoint_path = self._get_checkpoint_path(file_name, step)
+            with open(checkpoint_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            self.logger.info(f"💾 Checkpoint sauvegardé: {step} pour {file_name}")
+            return True
+        except Exception as e:
+            self.logger.warning(f"⚠️ Impossible de sauvegarder checkpoint: {e}")
+            return False
+
+    def load_checkpoint(self, file_name, step):
+        """Charge un checkpoint s'il existe"""
+        try:
+            checkpoint_path = self._get_checkpoint_path(file_name, step)
+            if checkpoint_path.exists():
+                with open(checkpoint_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                self.logger.info(f"📂 Checkpoint chargé: {step} pour {file_name}")
+                return data
+            return None
+        except Exception as e:
+            self.logger.warning(f"⚠️ Erreur chargement checkpoint: {e}")
+            return None
+
+    def clear_checkpoints(self, file_name):
+        """Supprime tous les checkpoints d'un fichier"""
+        try:
+            safe_name = file_name.replace('/', '_').replace(' ', '_')
+            for checkpoint_file in self.checkpoint_dir.glob(f"{safe_name}_*.json"):
+                checkpoint_file.unlink()
+            self.logger.info(f"🗑️ Checkpoints supprimés pour {file_name}")
+        except Exception as e:
+            self.logger.warning(f"⚠️ Erreur suppression checkpoints: {e}")
+
+
 class WhisperDriveProcessor:
     """Processeur principal pour l'automation complète"""
     
@@ -31,7 +82,8 @@ class WhisperDriveProcessor:
         self.drive_manager = None
         self.transcriber = None
         self.output_generator = None
-        
+        self.checkpoint_manager = CheckpointManager()
+
         self._setup_logging()
         self._initialize_components()
     
@@ -223,18 +275,45 @@ class WhisperDriveProcessor:
                 self.logger.info(f"⏭️  Transcription déjà existante, skip: {file_name}")
                 return True  # Considéré comme succès car déjà fait
             
-            # 1. Téléchargement
-            local_path = self._download_file(file_info)
-            if not local_path:
+            # 1. Téléchargement avec retry
+            try:
+                local_path = self._download_file(file_info)
+            except Exception as e:
+                self._log_processing_error(file_name, 'download', e, {'file_id': file_id})
                 return False
-            
-            # 2. Transcription
-            whisper_result = self._transcribe_file(local_path, file_name)
-            if not whisper_result:
+
+            # 2. Transcription avec checkpoint
+            whisper_result = None
+
+            # Essayer de charger depuis le checkpoint
+            checkpoint_data = self.checkpoint_manager.load_checkpoint(file_name, 'transcription')
+            if checkpoint_data:
+                self.logger.info("🔄 Reprise depuis checkpoint transcription")
+                whisper_result = checkpoint_data
+            else:
+                # Pas de checkpoint, faire la transcription
+                try:
+                    whisper_result = self._transcribe_file(local_path, file_name)
+                    if not whisper_result:
+                        self.logger.error(f"❌ Transcription a retourné None")
+                        return False
+
+                    # Sauvegarder le checkpoint
+                    self.checkpoint_manager.save_checkpoint(file_name, 'transcription', whisper_result)
+
+                except Exception as e:
+                    self._log_processing_error(file_name, 'transcription', e, {'local_path': local_path})
+                    return False
+
+            # 3. Génération des outputs avec retry
+            try:
+                output_files = self._generate_outputs(file_name, whisper_result)
+                if not output_files:
+                    self.logger.error(f"❌ Génération outputs a retourné None")
+                    return False
+            except Exception as e:
+                self._log_processing_error(file_name, 'generate_outputs', e)
                 return False
-            
-            # 3. Génération des outputs
-            output_files = self._generate_outputs(file_name, whisper_result)
 
             # 4. Upload vers Drive avec gestion d'erreur
             try:
@@ -246,8 +325,12 @@ class WhisperDriveProcessor:
 
                 if self._verify_upload_complete(base_filename, output_folder_id):
                     self.logger.info("✅ Vérification post-upload réussie")
+
+                    # Supprimer les checkpoints après succès complet
+                    self.checkpoint_manager.clear_checkpoints(file_name)
                 else:
                     self.logger.warning("⚠️ Vérification post-upload échouée (fichiers potentiellement manquants)")
+                    # Garder les checkpoints pour retry
 
                 # 6. Nettoyage SEULEMENT des fichiers uploadés avec succès
                 files_to_cleanup = {k: v for k, v in output_files.items() if k in uploaded_types}
@@ -443,6 +526,49 @@ class WhisperDriveProcessor:
 
         self.logger.info(f"✅ Vérification réussie: tous les fichiers sont sur Drive ({len(found)}/{len(expected_files)})")
         return True
+
+    def _log_processing_error(self, file_name, step, error, extra_info=None):
+        """
+        Log structuré des erreurs de processing pour faciliter le debug
+
+        Args:
+            file_name: Nom du fichier en cours de traitement
+            step: Étape qui a échoué (download, transcription, generate_outputs, upload)
+            error: Exception ou message d'erreur
+            extra_info: Informations supplémentaires (dict)
+        """
+        error_info = {
+            'timestamp': datetime.now().isoformat(),
+            'file_name': file_name,
+            'step': step,
+            'error': str(error),
+            'traceback': traceback.format_exc() if isinstance(error, Exception) else 'N/A'
+        }
+
+        if extra_info:
+            error_info.update(extra_info)
+
+        # Log formaté pour faciliter la lecture
+        self.logger.error("=" * 80)
+        self.logger.error(f"❌ PROCESSING FAILED - {step.upper()}")
+        self.logger.error(f"   Fichier: {error_info['file_name']}")
+        self.logger.error(f"   Étape: {error_info['step']}")
+        self.logger.error(f"   Erreur: {error_info['error']}")
+        if extra_info:
+            for key, value in extra_info.items():
+                self.logger.error(f"   {key}: {value}")
+        if error_info['traceback'] != 'N/A':
+            self.logger.error(f"   Traceback:\n{error_info['traceback']}")
+        self.logger.error("=" * 80)
+
+        # Sauvegarder dans un fichier d'erreurs pour analyse ultérieure
+        try:
+            error_log_file = '/tmp/whisper_processing_errors.jsonl'
+            with open(error_log_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(error_info, ensure_ascii=False) + '\n')
+            self.logger.info(f"📝 Erreur sauvegardée dans: {error_log_file}")
+        except Exception as log_error:
+            self.logger.warning(f"⚠️ Impossible de sauvegarder l'erreur: {log_error}")
 
     def _log_upload_error(self, file_type, file_path, error):
         """
