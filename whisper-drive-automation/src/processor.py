@@ -507,7 +507,8 @@ class WhisperDriveProcessor:
         if self.config.OUTPUT_FORMATS['word_timestamps']:
             expected_files.append(f"{base_filename}_word_timestamps.txt")
         if self.config.OUTPUT_FORMATS['paragraphs']:
-            expected_files.append(f"{base_filename}_paragraphs_timestamps.txt")
+            # Google Doc: pas d'extension .txt
+            expected_files.append(f"{base_filename}_paragraphs_timestamps")
         if self.config.OUTPUT_FORMATS['complete_json']:
             expected_files.append(f"{base_filename}_complete_data.json")
 
