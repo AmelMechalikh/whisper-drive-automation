@@ -5,7 +5,10 @@ Orchestration complète du workflow
 import logging
 import tempfile
 import os
+import json
+import traceback
 from pathlib import Path
+from datetime import datetime
 
 from .drive_manager import DriveManager
 from .whisper_transcriber import WhisperTranscriber
@@ -232,23 +235,52 @@ class WhisperDriveProcessor:
             
             # 3. Génération des outputs
             output_files = self._generate_outputs(file_name, whisper_result)
-            
-            # 4. Upload vers Drive
-            self._upload_results(output_files)
-            
-            # 5. Nettoyage
-            self._cleanup_local_files(local_path, output_files)
-            
+
+            # 4. Upload vers Drive avec gestion d'erreur
+            try:
+                uploaded_types = self._upload_results(output_files)
+
+                # 5. Vérification post-upload (optionnel mais recommandé)
+                base_filename = Path(file_name).stem
+                output_folder_id = self.config.DRIVE_FOLDERS['output']
+
+                if self._verify_upload_complete(base_filename, output_folder_id):
+                    self.logger.info("✅ Vérification post-upload réussie")
+                else:
+                    self.logger.warning("⚠️ Vérification post-upload échouée (fichiers potentiellement manquants)")
+
+                # 6. Nettoyage SEULEMENT des fichiers uploadés avec succès
+                files_to_cleanup = {k: v for k, v in output_files.items() if k in uploaded_types}
+                self._cleanup_local_files(local_path, files_to_cleanup)
+
+                # Si des fichiers n'ont pas été uploadés, les conserver pour debug
+                failed_files = {k: v for k, v in output_files.items() if k not in uploaded_types}
+                if failed_files:
+                    self.logger.warning(f"⚠️ Fichiers conservés localement pour debug: {list(failed_files.keys())}")
+                    for file_type, file_path in failed_files.items():
+                        if file_path and os.path.exists(file_path):
+                            self.logger.warning(f"   📁 {file_type}: {file_path}")
+
+            except Exception as upload_error:
+                self.logger.error(f"❌ Erreur lors de l'upload: {upload_error}")
+                self.logger.warning("⚠️ Fichiers locaux conservés pour retry manuel")
+                # Ne pas nettoyer en cas d'erreur - garder les fichiers pour retry
+                for file_type, file_path in output_files.items():
+                    if file_path and os.path.exists(file_path):
+                        self.logger.info(f"   📁 Conservé: {file_path}")
+                return False
+
             # Stats finales
             segments_count = len(whisper_result.get('segments', []))
             language = whisper_result.get('language', 'unknown')
             self.logger.info(f"✅ Traitement terminé pour: {file_name}")
             self.logger.info(f"📊 Stats: {segments_count} segments, {language} détecté")
-            
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"❌ Erreur traitement {file_name}: {e}")
+            self.logger.error(traceback.format_exc())
             return False
     
     def _download_file(self, file_info):
@@ -292,18 +324,166 @@ class WhisperDriveProcessor:
         )
     
     def _upload_results(self, output_files):
-        """Upload les résultats vers Google Drive"""
+        """
+        Upload les résultats vers Google Drive avec vérification complète
+
+        Args:
+            output_files: Dictionnaire {file_type: file_path}
+
+        Returns:
+            list: Liste des types de fichiers uploadés avec succès
+
+        Raises:
+            Exception: Si des uploads échouent
+        """
         output_folder_id = self.config.DRIVE_FOLDERS['output']
-        
+
+        uploaded = []
+        failed = []
+        skipped = []
+
         for file_type, file_path in output_files.items():
-            if not file_path or not os.path.exists(file_path):
+            # Vérification 1: Le chemin est-il défini?
+            if not file_path:
+                self.logger.warning(f"⚠️ Fichier {file_type} est None (pas généré)")
+                skipped.append(file_type)
                 continue
-            
-            drive_filename = Path(file_path).name
-            self.drive_manager.upload_file(
-                file_path, drive_filename, output_folder_id
-            )
-    
+
+            # Vérification 2: Le fichier existe-t-il localement?
+            if not os.path.exists(file_path):
+                self.logger.error(f"❌ Fichier {file_type} n'existe pas: {file_path}")
+                self._log_upload_error(file_type, file_path, "File not found locally")
+                failed.append(file_type)
+                continue
+
+            # Tentative d'upload
+            try:
+                drive_filename = Path(file_path).name
+                file_size = os.path.getsize(file_path)
+                self.logger.info(f"📤 Upload {file_type}: {drive_filename} ({file_size} bytes)")
+
+                file_id = self.drive_manager.upload_file(
+                    file_path, drive_filename, output_folder_id
+                )
+
+                if file_id:
+                    self.logger.info(f"✅ Upload réussi: {file_type} → {drive_filename} (ID: {file_id})")
+                    uploaded.append(file_type)
+                else:
+                    self.logger.error(f"❌ Upload échoué (retour None): {file_type}")
+                    self._log_upload_error(file_type, file_path, "Upload returned None")
+                    failed.append(file_type)
+
+            except Exception as e:
+                self.logger.error(f"❌ Exception upload {file_type}: {e}")
+                self._log_upload_error(file_type, file_path, e)
+                failed.append(file_type)
+
+        # Log du résumé
+        total = len(output_files)
+        self.logger.info(f"📊 Résumé upload: {len(uploaded)}/{total} réussis, {len(failed)} échoués, {len(skipped)} skippés")
+
+        if failed:
+            self.logger.error(f"❌ Fichiers échoués: {failed}")
+            raise Exception(f"Upload incomplet: {len(failed)} fichier(s) échoué(s) - {failed}")
+
+        if skipped:
+            self.logger.warning(f"⚠️ Fichiers skippés: {skipped}")
+
+        return uploaded
+
+    def _verify_upload_complete(self, base_filename, output_folder_id):
+        """
+        Vérifie que tous les fichiers attendus sont bien uploadés sur Drive
+
+        Args:
+            base_filename: Nom de base du fichier (sans extension)
+            output_folder_id: ID du dossier de sortie sur Drive
+
+        Returns:
+            bool: True si tous les fichiers sont présents, False sinon
+        """
+        expected_files = []
+
+        # Construire la liste des fichiers attendus selon la config
+        if self.config.OUTPUT_FORMATS['transcription']:
+            expected_files.append(f"{base_filename}_transcription.txt")
+        if self.config.OUTPUT_FORMATS['srt']:
+            expected_files.append(f"{base_filename}_with_timestamps.srt")
+        if self.config.OUTPUT_FORMATS['word_timestamps']:
+            expected_files.append(f"{base_filename}_word_timestamps.txt")
+        if self.config.OUTPUT_FORMATS['paragraphs']:
+            expected_files.append(f"{base_filename}_paragraphs_timestamps.txt")
+        if self.config.OUTPUT_FORMATS['complete_json']:
+            expected_files.append(f"{base_filename}_complete_data.json")
+
+        self.logger.info(f"🔍 Vérification post-upload de {len(expected_files)} fichiers...")
+
+        missing = []
+        found = []
+
+        for filename in expected_files:
+            try:
+                files = self.drive_manager.search_files(output_folder_id, filename)
+                if files:
+                    found.append(filename)
+                    self.logger.info(f"   ✅ {filename}")
+                else:
+                    missing.append(filename)
+                    self.logger.error(f"   ❌ {filename} MANQUANT")
+            except Exception as e:
+                self.logger.error(f"   ⚠️ Erreur vérification {filename}: {e}")
+                missing.append(filename)
+
+        # Résumé
+        if missing:
+            self.logger.error(f"❌ Vérification échouée: {len(missing)}/{len(expected_files)} fichiers manquants")
+            self.logger.error(f"   Fichiers manquants: {missing}")
+            return False
+
+        self.logger.info(f"✅ Vérification réussie: tous les fichiers sont sur Drive ({len(found)}/{len(expected_files)})")
+        return True
+
+    def _log_upload_error(self, file_type, file_path, error):
+        """
+        Log structuré des erreurs d'upload pour faciliter le debug
+
+        Args:
+            file_type: Type de fichier (ex: 'paragraphs', 'complete_json')
+            file_path: Chemin du fichier local
+            error: Exception ou message d'erreur
+        """
+        error_info = {
+            'timestamp': datetime.now().isoformat(),
+            'file_type': file_type,
+            'file_path': str(file_path) if file_path else 'None',
+            'file_exists': os.path.exists(file_path) if file_path else False,
+            'file_size': os.path.getsize(file_path) if file_path and os.path.exists(file_path) else 0,
+            'error': str(error),
+            'traceback': traceback.format_exc() if isinstance(error, Exception) else 'N/A'
+        }
+
+        # Log formaté pour faciliter la lecture
+        self.logger.error("=" * 80)
+        self.logger.error("❌ UPLOAD FAILED - DÉTAILS:")
+        self.logger.error(f"   Type: {error_info['file_type']}")
+        self.logger.error(f"   Fichier: {error_info['file_path']}")
+        self.logger.error(f"   Existe: {error_info['file_exists']}")
+        self.logger.error(f"   Taille: {error_info['file_size']} bytes")
+        self.logger.error(f"   Erreur: {error_info['error']}")
+        if error_info['traceback'] != 'N/A':
+            self.logger.error(f"   Traceback:\n{error_info['traceback']}")
+        self.logger.error("=" * 80)
+
+        # Sauvegarder dans un fichier d'erreurs pour analyse ultérieure
+        try:
+            error_log_file = '/tmp/whisper_upload_errors.jsonl'
+            with open(error_log_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(error_info, ensure_ascii=False) + '\n')
+            self.logger.info(f"📝 Erreur sauvegardée dans: {error_log_file}")
+        except Exception as log_error:
+            self.logger.warning(f"⚠️ Impossible de sauvegarder l'erreur: {log_error}")
+
     def _cleanup_local_files(self, downloaded_file, output_files):
         """Nettoie les fichiers locaux temporaires"""
         try:

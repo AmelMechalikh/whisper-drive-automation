@@ -4,22 +4,56 @@ Gestion des téléchargements et uploads
 """
 import os
 import logging
+import time
+from functools import wraps
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from google.oauth2.service_account import Credentials
+from google.auth import default as get_default_credentials
 from pathlib import Path
 import tempfile
 import io
 
+
+def retry_on_failure(max_retries=3, backoff_factor=2):
+    """
+    Décorateur pour retry avec backoff exponentiel
+
+    Args:
+        max_retries: Nombre maximum de tentatives
+        backoff_factor: Facteur multiplicateur pour le temps d'attente
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            logger = logging.getLogger(__name__)
+
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        # Dernière tentative, on propage l'erreur
+                        logger.error(f"❌ Échec définitif après {max_retries} tentatives: {e}")
+                        raise
+
+                    wait_time = backoff_factor ** attempt
+                    logger.warning(f"⚠️ Tentative {attempt + 1}/{max_retries} échouée: {e}")
+                    logger.info(f"⏳ Nouvelle tentative dans {wait_time}s...")
+                    time.sleep(wait_time)
+
+        return wrapper
+    return decorator
+
 class DriveManager:
     """Gestionnaire Google Drive pour l'automation de transcription"""
     
-    def __init__(self, credentials_path, scopes=['https://www.googleapis.com/auth/drive']):
+    def __init__(self, credentials_path=None, scopes=['https://www.googleapis.com/auth/drive']):
         """
         Initialise le gestionnaire Google Drive
-        
+
         Args:
-            credentials_path: Chemin vers le fichier credentials.json
+            credentials_path: Chemin vers le fichier credentials.json (None pour utiliser les credentials par défaut)
             scopes: Scopes d'autorisation Drive
         """
         self.credentials_path = credentials_path
@@ -27,14 +61,20 @@ class DriveManager:
         self.service = None
         self.logger = logging.getLogger(__name__)
         self._setup_drive_service()
-    
+
     def _setup_drive_service(self):
         """Configure le service Google Drive API"""
         try:
-            self.creds = Credentials.from_service_account_file(
-                self.credentials_path,
-                scopes=self.scopes
-            )
+            # Si credentials_path est fourni, utiliser le fichier
+            # Sinon, utiliser les credentials par défaut (pour Cloud Run/GCE)
+            if self.credentials_path:
+                self.creds = Credentials.from_service_account_file(
+                    self.credentials_path,
+                    scopes=self.scopes
+                )
+            else:
+                self.creds, project = get_default_credentials(scopes=self.scopes)
+
             self.service = build('drive', 'v3', credentials=self.creds)
             
             # Test de connexion
@@ -156,62 +196,71 @@ class DriveManager:
             self.logger.error(f"❌ Erreur téléchargement {file_name}: {e}")
             return None
     
+    @retry_on_failure(max_retries=3, backoff_factor=2)
     def upload_file(self, local_path, drive_filename, folder_id):
         """
-        Upload un fichier vers Drive
-        
+        Upload un fichier vers Drive avec retry automatique
+
         Args:
             local_path: Chemin du fichier local
             drive_filename: Nom dans Drive
             folder_id: ID du dossier de destination
-        
+
         Returns:
-            str: ID du fichier uploadé ou None si erreur
+            str: ID du fichier uploadé
+
+        Raises:
+            Exception: Si l'upload échoue après tous les retries
         """
-        try:
-            self.logger.info(f"☁️  Upload vers Drive: {drive_filename}")
-            
-            # Déterminer le MIME type
+        # Validation des paramètres
+        if not os.path.exists(local_path):
+            raise FileNotFoundError(f"Fichier local introuvable: {local_path}")
+
+        file_size = os.path.getsize(local_path)
+        self.logger.info(f"☁️  Upload vers Drive: {drive_filename} ({file_size} bytes)")
+
+        # Déterminer le MIME type
+        mime_type = 'text/plain'
+        if drive_filename.endswith('.json'):
+            mime_type = 'application/json'
+        elif drive_filename.endswith('.srt'):
             mime_type = 'text/plain'
-            if drive_filename.endswith('.json'):
-                mime_type = 'application/json'
-            elif drive_filename.endswith('.srt'):
-                mime_type = 'text/plain'
-            elif drive_filename.endswith('.xlsx'):
-                mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            elif drive_filename.endswith('.mp4'):
-                mime_type = 'video/mp4'
-            elif drive_filename.endswith('.mp3'):
-                mime_type = 'audio/mpeg'
-            
-            # Métadonnées du fichier
-            file_metadata = {
-                'name': drive_filename,
-                'parents': [folder_id]
-            }
-            
-            # Upload with resumable upload for large files (chunked to avoid OOM)
-            # Chunk size: 50MB to avoid loading entire file in memory
-            media = MediaFileUpload(
-                local_path,
-                mimetype=mime_type,
-                resumable=True,
-                chunksize=50 * 1024 * 1024  # 50 MB chunks
-            )
-            file = self.service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields='id',
-                supportsAllDrives=True
-            ).execute()
-            
-            file_id = file.get('id')
-            self.logger.info(f"✅ Fichier uploadé: {drive_filename} (ID: {file_id})")
-            return file_id
-            
-        except Exception as e:
-            self.logger.error(f"❌ Erreur upload Drive: {e}")
-            return None
+        elif drive_filename.endswith('.xlsx'):
+            mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        elif drive_filename.endswith('.mp4'):
+            mime_type = 'video/mp4'
+        elif drive_filename.endswith('.mp3'):
+            mime_type = 'audio/mpeg'
+
+        # Métadonnées du fichier
+        file_metadata = {
+            'name': drive_filename,
+            'parents': [folder_id]
+        }
+
+        # Upload with resumable upload for large files (chunked to avoid OOM)
+        # Chunk size: 50MB to avoid loading entire file in memory
+        media = MediaFileUpload(
+            local_path,
+            mimetype=mime_type,
+            resumable=True,
+            chunksize=50 * 1024 * 1024  # 50 MB chunks
+        )
+
+        file = self.service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
+
+        file_id = file.get('id')
+
+        if not file_id:
+            raise Exception(f"Upload échoué: aucun ID retourné pour {drive_filename}")
+
+        self.logger.info(f"✅ Fichier uploadé: {drive_filename} (ID: {file_id})")
+        return file_id
     
     def list_recent_audio_files(self, folder_id, extensions, hours_back=1):
         """
