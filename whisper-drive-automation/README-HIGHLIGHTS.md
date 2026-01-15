@@ -11,13 +11,18 @@ Ce système automatise l'extraction de segments vidéo/audio basés sur des anno
 ```
 ⏰ Cloud Scheduler (toutes les 5 min)
     ↓
-☁️  Cloud Run Highlights Processor
-    ├─ Détecte fichiers avec commentaires
-    ├─ Extrait highlights → Génère Excel
+☁️  Cloud Run Highlights Orchestrator
+    ├─ Détecte fichiers avec balise READY
+    ├─ Génère Excel avec timestamps
+    ├─ Crée jobs de découpage
+    └─ Upload Excel sur Drive
+    ↓
+🖥️  VM Worker (démarrage à la demande)
+    ├─ Traite les jobs en queue
     ├─ Télécharge vidéo source
     ├─ Découpe segments (ffmpeg, pas de réencodage)
-    ├─ Fusionne segments identiques
-    └─ Upload résultats sur Drive
+    ├─ Upload segments dans sous-dossiers horodatés
+    └─ Auto-shutdown après traitement
     ↓
 📁 Google Drive (résultats organisés par vidéo)
 ```
@@ -168,7 +173,7 @@ chmod +x scripts/deploy_highlights_serverless.sh
 
 ```bash
 # Status du système
-CLOUD_RUN_URL=$(gcloud run services describe highlights-processor \
+CLOUD_RUN_URL=$(gcloud run services describe highlights-orchestrator \
   --region=europe-west1 --format='value(status.url)')
 
 curl $CLOUD_RUN_URL/status
@@ -208,11 +213,11 @@ Une fois déployé, le système fonctionne automatiquement :
 
 ```bash
 # Logs en temps réel
-gcloud run services logs read highlights-processor \
+gcloud run services logs read highlights-orchestrator \
   --region=europe-west1 --follow
 
 # Dernières exécutions
-gcloud run services logs read highlights-processor \
+gcloud run services logs read highlights-orchestrator \
   --region=europe-west1 --limit=50
 ```
 
@@ -415,13 +420,13 @@ Cela va :
 
 ```bash
 # Vérifier le statut
-curl https://highlights-processor-XXX-ew.a.run.app/status
+curl https://highlights-orchestrator-XXX-ew.a.run.app/status
 
 # Déclencher manuellement
-curl -X POST https://highlights-processor-XXX-ew.a.run.app/trigger
+curl -X POST https://highlights-orchestrator-XXX-ew.a.run.app/trigger
 
 # Voir les logs
-gcloud run services logs read highlights-processor --region=europe-west1 --limit=100
+gcloud run services logs read highlights-orchestrator --region=europe-west1 --limit=100
 ```
 
 ### Les timestamps ne sont pas trouvés
@@ -436,7 +441,7 @@ Assurez-vous que :
 Vérifier que :
 - La vidéo source existe dans le dossier **Files**
 - Le nom du fichier (sans extension) correspond exactement à celui de la transcription
-- Les logs Cloud Run pour voir les erreurs : `gcloud run services logs read highlights-processor`
+- Les logs Cloud Run pour voir les erreurs : `gcloud run services logs read highlights-orchestrator`
 
 ### Timeout Cloud Run
 
@@ -451,10 +456,10 @@ Si votre vidéo dépasse 60 min de traitement :
 gcloud scheduler jobs list --location=europe-west1
 
 # Déclencher manuellement
-gcloud scheduler jobs run trigger-highlights --location=europe-west1
+gcloud scheduler jobs run highlights-orchestrator-trigger --location=europe-west1
 
 # Voir l'historique
-gcloud scheduler jobs describe trigger-highlights --location=europe-west1
+gcloud scheduler jobs describe highlights-orchestrator-trigger --location=europe-west1
 ```
 
 ---
