@@ -410,6 +410,7 @@ function showNotification(message, type = 'info', duration = 3000) {
   }, duration);
 }
 
+
 // Réinjecter l'extension si la page change (Google Docs est une SPA)
 let lastUrl = location.href;
 new MutationObserver(() => {

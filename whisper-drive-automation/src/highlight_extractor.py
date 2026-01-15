@@ -508,7 +508,114 @@ class HighlightExtractor:
                     highlights.append(highlight_text)
         
         return highlights
-    
+
+    def _flatten_words_from_segments(self, segments: List[Dict]) -> List[Dict]:
+        """
+        Crée une liste plate de tous les mots avec gestion des apostrophes
+
+        Whisper tokenize "c'est" en ["c", "'est"], cette fonction les recolle
+
+        Args:
+            segments: Liste des segments avec words
+
+        Returns:
+            Liste de dicts: [{'word': 'cest', 'start': 849.22, 'end': 849.32, 'index': 0}, ...]
+        """
+        all_words = []
+        global_index = 0
+
+        for segment in segments:
+            if 'words' not in segment:
+                continue
+
+            for word_info in segment['words']:
+                word_text = word_info.get('word', '').strip()
+
+                # Si le mot commence par une apostrophe et qu'il y a un mot précédent, le fusionner
+                if (word_text.startswith("'") or word_text.startswith("'")) and all_words:
+                    # Fusionner avec le mot précédent
+                    prev_word = all_words[-1]
+                    # Retirer toutes les apostrophes pour uniformiser
+                    clean_text = word_text.replace("'", "").replace("'", "")
+                    prev_word['word'] = prev_word['word'] + clean_text
+                    prev_word['end'] = word_info.get('end', prev_word['end'])
+                else:
+                    # Nouveau mot - retirer les apostrophes pour uniformiser
+                    clean_text = word_text.replace("'", "").replace("'", "").lower()
+                    all_words.append({
+                        'word': clean_text,
+                        'start': word_info.get('start', 0),
+                        'end': word_info.get('end', 0),
+                        'index': global_index
+                    })
+                    global_index += 1
+
+        return all_words
+
+    def _find_word_sequence_candidates(
+        self,
+        all_words: List[Dict],
+        search_words: List[str],
+        min_score: float = 0.7
+    ) -> List[Dict]:
+        """
+        Trouve tous les candidats où la séquence de mots apparaît
+
+        Args:
+            all_words: Liste plate de tous les mots avec timestamps
+            search_words: Liste des mots à chercher (déjà normalisés)
+            min_score: Score minimum pour considérer un candidat (0-1)
+
+        Returns:
+            Liste de candidats avec score: [{'index': 0, 'start': 849.22, 'score': 0.95, 'matched': 5}, ...]
+        """
+        candidates = []
+
+        # Normaliser les mots de recherche
+        def normalize_word(w):
+            # Retirer ponctuation (y compris apostrophes)
+            w = re.sub(r"[,\.!?;:\(\)''']", '', w)
+            return w.lower().strip()
+
+        search_normalized = [normalize_word(w) for w in search_words if normalize_word(w)]
+
+        if not search_normalized:
+            return []
+
+        # Chercher chaque position où le premier mot apparaît
+        first_word = search_normalized[0]
+
+        for i, word_info in enumerate(all_words):
+            word_norm = normalize_word(word_info['word'])
+
+            # Si le premier mot matche, compter combien de mots consécutifs matchent
+            if first_word == word_norm or first_word in word_norm or word_norm in first_word:
+                matched_count = 1
+
+                # Compter les mots suivants qui matchent
+                for j in range(1, min(len(search_normalized), len(all_words) - i)):
+                    next_word_norm = normalize_word(all_words[i + j]['word'])
+                    search_word_norm = search_normalized[j]
+
+                    if search_word_norm == next_word_norm or search_word_norm in next_word_norm or next_word_norm in search_word_norm:
+                        matched_count += 1
+                    else:
+                        break
+
+                # Calculer le score
+                score = matched_count / len(search_normalized)
+
+                if score >= min_score:
+                    candidates.append({
+                        'index': i,
+                        'start': word_info['start'],
+                        'end': all_words[min(i + matched_count - 1, len(all_words) - 1)]['end'],
+                        'score': score,
+                        'matched': matched_count
+                    })
+
+        return candidates
+
     def _find_exact_timestamps(
         self,
         highlight_text: str,
@@ -517,8 +624,8 @@ class HighlightExtractor:
         context_after: str = ""
     ) -> Tuple[Optional[float], Optional[float]]:
         """
-        Trouve les timestamps exacts en utilisant les word timestamps
-        Utilise le contexte pour disambiguïser si plusieurs occurrences trouvées
+        Trouve les timestamps exacts en utilisant UNIQUEMENT les word timestamps
+        Approche basée sur séquence de mots avec scoring (pas de segments)
 
         Args:
             highlight_text: Texte du highlight (peut être tronqué)
@@ -529,243 +636,161 @@ class HighlightExtractor:
         Returns:
             (start_time, end_time) en secondes
         """
-        # Fonction helper pour normaliser le texte (retirer ponctuation pour comparaison)
-        def normalize_for_search(text):
-            """Retire la ponctuation lourde et normalise les espaces"""
-            text = re.sub(r'[,\.!?;:]', ' ', text)
-            text = ' '.join(text.split())  # Normaliser les espaces multiples
-            return text.lower().strip()
-        
-        # Nettoyer le texte du highlight en utilisant la méthode dédiée
+        # Nettoyer le texte du highlight
         clean_text = self._clean_highlight_text(highlight_text)
-        clean_text_normalized = normalize_for_search(clean_text)
-        
-        # Extraire les mots (garder les apostrophes pour matcher "qu'on", "l'attachement", etc.)
-        words = [w for w in clean_text_normalized.split() if w.strip()]
+
+        # Extraire les mots normalisés
+        words = [w for w in clean_text.split() if w.strip()]
         if len(words) < 2:
             self.logger.warning(f"Pas assez de mots dans le highlight: {clean_text[:50]}")
             return None, None
-        
-        # Utiliser les premiers mots pour la recherche
-        # Chercher avec 6-8 premiers mots pour éviter les faux positifs sur phrases courtes
-        num_words_search = min(8, len(words))
-        first_words = ' '.join(words[:num_words_search])
 
-        # Pour la fin, utiliser les 6 derniers mots pour plus de précision
-        # (au lieu d'un seul mot qui peut apparaître plusieurs fois)
-        # Ex: "jusque là tout va bien" au lieu de juste "là tout va bien"
-        num_words_end = min(6, len(words))
-        last_words = ' '.join(words[-num_words_end:]) if len(words) >= num_words_end else ' '.join(words)
-        # Garder aussi le dernier mot seul pour fallback
-        last_word = words[-1] if words else None
+        self.logger.debug(f"🔍 Recherche de {len(words)} mots: '{clean_text[:80]}...'")
 
-        self.logger.debug(f"Recherche début: '{first_words[:50]}...'")
-        self.logger.debug(f"Recherche fin: derniers mots '{last_words[:50]}...'")
-
+        # ÉTAPE 1: Aplatir tous les mots de tous les segments
         segments = complete_data.get('segments', [])
+        all_words = self._flatten_words_from_segments(segments)
 
-        # ÉTAPE 1: Chercher TOUS les candidats de début avec sliding window
-        # Pour gérer les highlights qui commencent dans un segment court,
-        # on concatène 3 segments consécutifs et on cherche dans cette fenêtre
-        start_candidates = []
-        WINDOW_SIZE = 3  # Nombre de segments à concaténer
-
-        for seg_idx in range(len(segments)):
-            # Créer la fenêtre: concaténer les N segments suivants
-            window_segments = segments[seg_idx:seg_idx + WINDOW_SIZE]
-            window_text = ' '.join(seg.get('text', '') for seg in window_segments)
-            window_text_normalized = normalize_for_search(window_text)
-
-            # Chercher le début dans la fenêtre
-            if first_words in window_text_normalized:
-                # FIX: Déterminer dans QUEL segment de la fenêtre se trouvent les premiers mots
-                # Construire les textes cumulés pour identifier le bon segment
-                cumulative_text = ""
-                actual_segment_idx = seg_idx
-                actual_segment = segments[seg_idx]
-
-                for i, seg in enumerate(window_segments):
-                    seg_text_norm = normalize_for_search(seg.get('text', ''))
-
-                    # Vérifier si les premiers mots sont dans ce segment individuel
-                    if first_words in seg_text_norm:
-                        actual_segment_idx = seg_idx + i
-                        actual_segment = segments[actual_segment_idx]
-                        break
-
-                    # Sinon, vérifier dans le texte cumulé (pour les phrases qui traversent les segments)
-                    cumulative_text += " " + seg_text_norm if cumulative_text else seg_text_norm
-                    if first_words in cumulative_text:
-                        # Les premiers mots commencent dans ce segment
-                        actual_segment_idx = seg_idx + i
-                        actual_segment = segments[actual_segment_idx]
-                        break
-
-                # Utiliser word timestamps si disponibles
-                candidate_start_time = None
-                if 'words' in actual_segment and actual_segment['words']:
-                    for word_info in actual_segment['words']:
-                        word_normalized = normalize_for_search(word_info['word'])
-                        # Chercher le premier mot du highlight
-                        if words[0] in word_normalized:
-                            candidate_start_time = word_info['start']
-                            break
-                if candidate_start_time is None:
-                    candidate_start_time = actual_segment['start']
-
-                start_candidates.append({
-                    'time': candidate_start_time,
-                    'segment_idx': actual_segment_idx,
-                    'segment_text': actual_segment.get('text', '')
-                })
-
-        if not start_candidates:
-            self.logger.warning(f"Aucun candidat de début trouvé pour: {clean_text[:80]}")
+        if not all_words:
+            self.logger.warning("Aucun mot trouvé dans les segments")
             return None, None
 
-        # ÉTAPE 2: Disambiguïser si plusieurs candidats
+        self.logger.debug(f"📋 {len(all_words)} mots au total dans le transcript")
+
+        # ÉTAPE 2: Chercher le début avec les 6-8 premiers mots
+        num_words_start = min(8, len(words))
+        start_search_words = words[:num_words_start]
+
+        start_candidates = self._find_word_sequence_candidates(
+            all_words,
+            start_search_words,
+            min_score=0.7
+        )
+
+        if not start_candidates:
+            self.logger.warning(f"❌ Aucun candidat de début trouvé pour: {clean_text[:80]}")
+            return None, None
+
+        self.logger.debug(f"🎯 {len(start_candidates)} candidat(s) de début trouvé(s)")
+
+        # Choisir le meilleur candidat de début (score le plus proche de 1.0)
+        best_start = max(start_candidates, key=lambda c: c['score'])
+        start_time = best_start['start']
+        start_index = best_start['index']
+
+        self.logger.info(f"✅ Début: {start_time:.2f}s (score={best_start['score']:.2f}, {best_start['matched']}/{len(start_search_words)} mots)")
+
+        # Si plusieurs candidats avec le même score, utiliser le contexte pour disambiguïser
         if len(start_candidates) > 1:
-            self.logger.info(f"🔀 {len(start_candidates)} occurrences trouvées, utilisation du contexte pour disambiguïser")
-            start_time, start_segment_idx = self._disambiguate_with_context(
-                start_candidates,
-                segments,
-                context_before,
-                context_after,
-                normalize_for_search
-            )
-            if start_time is None:
-                self.logger.warning("Échec disambiguation, utilisation du premier candidat")
-                start_time = start_candidates[0]['time']
-                start_segment_idx = start_candidates[0]['segment_idx']
-        else:
-            # Un seul candidat, simple
-            start_time = start_candidates[0]['time']
-            start_segment_idx = start_candidates[0]['segment_idx']
+            top_score = best_start['score']
+            top_candidates = [c for c in start_candidates if c['score'] == top_score]
 
-        self.logger.debug(f"🔍 Début trouvé à {start_time:.2f}s (segment {start_segment_idx})")
+            if len(top_candidates) > 1 and (context_before or context_after):
+                self.logger.info(f"🔀 {len(top_candidates)} candidats avec score {top_score:.2f}, utilisation du contexte")
 
-        # ÉTAPE 3: Chercher TOUS les candidats de fin dans les segments suivants
-        end_candidates = []
-        for seg_idx, segment in enumerate(segments):
-            # Chercher la fin dans tous les segments après le début
-            if start_time is not None and start_segment_idx is not None:
-                # Vérifier qu'on est après le début
-                if seg_idx >= start_segment_idx:
-                    segment_text_norm = normalize_for_search(segment.get('text', ''))
+                # Convertir en format compatible avec _disambiguate_with_context
+                candidate_dicts = []
+                for c in top_candidates:
+                    # Trouver le segment correspondant
+                    seg_idx = 0
+                    for i, seg in enumerate(segments):
+                        if seg['start'] <= c['start'] <= seg.get('end', seg['start'] + 10):
+                            seg_idx = i
+                            break
+                    candidate_dicts.append({
+                        'time': c['start'],
+                        'segment_idx': seg_idx,
+                        'segment_text': segments[seg_idx].get('text', '') if seg_idx < len(segments) else ''
+                    })
 
-                    # Essayer plusieurs stratégies par ordre de spécificité
-                    matched = False
-                    strategy_used = None
+                def normalize_for_search(text):
+                    text = re.sub(r'[,\.!?;:]', ' ', text)
+                    return ' '.join(text.split()).lower().strip()
 
-                    # Stratégie 1: phrase complète (6 mots)
-                    if last_words in segment_text_norm:
-                        matched = True
-                        strategy_used = "6_words"
+                disambiguated_time, _ = self._disambiguate_with_context(
+                    candidate_dicts,
+                    segments,
+                    context_before,
+                    context_after,
+                    normalize_for_search
+                )
 
-                    # Stratégie 2: 3 derniers mots
-                    if not matched and num_words_end >= 3:
-                        fallback_words_3 = ' '.join(words[-3:])
-                        if fallback_words_3 in segment_text_norm:
-                            matched = True
-                            strategy_used = "3_words"
+                if disambiguated_time:
+                    start_time = disambiguated_time
+                    # Mettre à jour start_index
+                    for c in start_candidates:
+                        if c['start'] == start_time:
+                            start_index = c['index']
+                            break
 
-                    # Stratégie 3: 2 derniers mots (pour phrases divisées entre segments)
-                    if not matched and num_words_end >= 2:
-                        fallback_words_2 = ' '.join(words[-2:])
-                        if fallback_words_2 in segment_text_norm:
-                            matched = True
-                            strategy_used = "2_words"
+        # ÉTAPE 3: Chercher la fin avec les 6 derniers mots
+        num_words_end = min(6, len(words))
+        end_search_words = words[-num_words_end:]
 
-                    # Si une stratégie a matché, trouver le timestamp exact du dernier mot
-                    if matched:
-                        candidate_end_time = None
-                        if 'words' in segment and segment['words']:
-                            for word_info in reversed(segment['words']):
-                                word_normalized = normalize_for_search(word_info['word'])
-                                if (last_word in word_normalized or word_normalized.startswith(last_word)) and word_info['end'] >= start_time:
-                                    candidate_end_time = word_info['end']
-                                    break
+        # Chercher uniquement APRÈS le début
+        words_after_start = all_words[start_index:]
 
-                        if candidate_end_time:
-                            end_candidates.append({
-                                'time': candidate_end_time,
-                                'segment_idx': seg_idx,
-                                'segment_text': segment.get('text', ''),
-                                'strategy': strategy_used
-                            })
+        end_candidates = self._find_word_sequence_candidates(
+            words_after_start,
+            end_search_words,
+            min_score=0.7
+        )
 
-        # ÉTAPE 4: Choisir le meilleur candidat de fin
-        end_time = None
         if not end_candidates:
-            self.logger.warning(f"Aucun candidat de fin trouvé")
-        elif len(end_candidates) == 1:
-            # Un seul candidat, simple
-            end_time = end_candidates[0]['time']
-            self.logger.debug(f"Un seul candidat de fin: {end_time:.2f}s")
+            self.logger.warning(f"❌ Aucun candidat de fin trouvé")
+            return None, None
+
+        self.logger.debug(f"🎯 {len(end_candidates)} candidat(s) de fin trouvé(s)")
+
+        # ÉTAPE 4: Choisir le meilleur candidat de fin en utilisant le ratio de couverture
+        if len(end_candidates) == 1:
+            end_time = end_candidates[0]['end']
+            self.logger.info(f"✅ Fin: {end_time:.2f}s (score={end_candidates[0]['score']:.2f})")
         else:
-            # Plusieurs candidats : utiliser la LONGUEUR DU TEXTE pour choisir
-            self.logger.info(f"🔀 {len(end_candidates)} candidats de fin trouvés")
+            # Calculer le ratio de couverture pour chaque candidat
+            self.logger.info(f"🔀 {len(end_candidates)} candidats de fin, calcul des ratios")
 
-            # Afficher les candidats pour debug
-            for i, cand in enumerate(end_candidates):
-                self.logger.debug(f"  Candidat {i+1}: {cand['time']:.2f}s - {cand['segment_text'][:60]}...")
-
-            # Stratégie robuste: choisir le candidat dont le texte du transcript
-            # entre début et fin couvre le mieux le texte du highlight
             best_candidate = None
-            best_distance_from_1 = float('inf')  # Distance du ratio par rapport à 1.0
+            best_distance_from_1 = float('inf')
 
-            for candidate in end_candidates:
-                # Construire le texte du transcript entre start_time et ce candidat
-                candidate_end_time = candidate['time']
-                transcript_text = []
-                for seg in segments:
-                    if seg['start'] >= start_time and seg['start'] <= candidate_end_time:
-                        transcript_text.append(seg.get('text', ''))
+            for cand in end_candidates:
+                # Compter les mots entre start et end
+                end_index_abs = start_index + cand['index'] + cand['matched']
+                words_in_range = all_words[start_index:end_index_abs]
 
-                transcript_str = ' '.join(transcript_text)
-                transcript_len = len(normalize_for_search(transcript_str))
-                highlight_len = len(clean_text_normalized)
+                # Reconstruire le texte
+                transcript_text = ' '.join([w['word'] for w in words_in_range])
+                transcript_len = len(transcript_text)
+                highlight_len = len(clean_text)
 
-                # Calculer le ratio de couverture
                 coverage_ratio = transcript_len / highlight_len if highlight_len > 0 else 0
 
-                self.logger.debug(f"  Candidat {candidate['time']:.2f}s: transcript={transcript_len} chars, highlight={highlight_len} chars, ratio={coverage_ratio:.2f}")
+                self.logger.debug(f"  Candidat {cand['end']:.2f}s: ratio={coverage_ratio:.2f} (score={cand['score']:.2f})")
 
-                # Le meilleur candidat est celui dont le ratio est le plus PROCHE de 1.0
-                # (permettre une marge de 0.7 à 1.5 pour gérer les variations de ponctuation)
+                # Le meilleur candidat est celui dont le ratio est le plus proche de 1.0
                 if 0.7 <= coverage_ratio <= 1.5:
                     distance = abs(coverage_ratio - 1.0)
                     if distance < best_distance_from_1:
                         best_distance_from_1 = distance
-                        best_candidate = candidate
-                        self.logger.debug(f"    → Meilleur candidat actuel (distance={distance:.2f})")
+                        best_candidate = cand
 
             if best_candidate:
-                # Recalculer le ratio pour l'affichage
-                transcript_text = []
-                for seg in segments:
-                    if seg['start'] >= start_time and seg['start'] <= best_candidate['time']:
-                        transcript_text.append(seg.get('text', ''))
-                transcript_len = len(normalize_for_search(' '.join(transcript_text)))
-                final_ratio = transcript_len / len(clean_text_normalized) if len(clean_text_normalized) > 0 else 0
+                end_time = best_candidate['end']
+                end_index_abs = start_index + best_candidate['index'] + best_candidate['matched']
+                words_in_range = all_words[start_index:end_index_abs]
+                transcript_len = len(' '.join([w['word'] for w in words_in_range]))
+                final_ratio = transcript_len / len(clean_text) if len(clean_text) > 0 else 0
 
-                end_time = best_candidate['time']
-                self.logger.info(f"✅ Fin choisie par proximité à 1.0: {end_time:.2f}s (ratio={final_ratio:.2f}, distance={best_distance_from_1:.2f})")
+                self.logger.info(f"✅ Fin choisie: {end_time:.2f}s (ratio={final_ratio:.2f}, distance={best_distance_from_1:.2f})")
             else:
-                # Fallback: prendre le PREMIER candidat (le plus proche temporellement)
-                end_time = end_candidates[0]['time']
-                self.logger.warning(f"⚠️ Aucun candidat dans la plage 0.7-1.5, utilisation du premier: {end_time:.2f}s")
-        
-        if start_time is None or end_time is None:
-            self.logger.warning(f"Timestamps non trouvés pour: {clean_text[:80]}")
-            return None, None
-        
-        # Ajouter une petite marge de sécurité à la fin pour finir le mot/la phrase
-        # 0.4 secondes permettent de capturer la fin complète du dernier mot
+                # Fallback: prendre le premier candidat (le plus proche temporellement)
+                end_time = end_candidates[0]['end']
+                self.logger.warning(f"⚠️ Aucun candidat avec ratio 0.7-1.5, utilisation du premier: {end_time:.2f}s")
+
+        # Ajouter une petite marge de sécurité à la fin
         end_time_with_margin = end_time + 0.4
-        
-        self.logger.info(f"✅ Timestamps trouvés: {start_time:.2f}s → {end_time_with_margin:.2f}s (marge +0.4s) pour '{clean_text[:50]}...'")
+
+        self.logger.info(f"🎬 Timestamps finaux: {start_time:.2f}s → {end_time_with_margin:.2f}s (marge +0.4s)")
         return start_time, end_time_with_margin
     
     def _seconds_to_timecode(self, seconds: float) -> str:

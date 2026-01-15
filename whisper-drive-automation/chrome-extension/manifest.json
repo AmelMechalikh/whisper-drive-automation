@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Marqueur Segments Vidéo",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Marquez facilement les segments vidéo dans vos Google Docs avec des balises inline",
   "permissions": [
     "activeTab",
-    "identity"
+    "identity",
+    "contextMenus"
   ],
   "host_permissions": [
     "https://docs.googleapis.com/*"

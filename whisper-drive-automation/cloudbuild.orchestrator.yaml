@@ -1,0 +1,11 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-f', 'deployments/highlights/Dockerfile',
+      '-t', 'gcr.io/${PROJECT_ID}/highlights-orchestrator:latest',
+      '.'
+    ]
+
+images:
+  - 'gcr.io/${PROJECT_ID}/highlights-orchestrator:latest'

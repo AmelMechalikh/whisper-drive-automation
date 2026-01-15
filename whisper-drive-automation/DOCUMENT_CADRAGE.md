@@ -161,8 +161,8 @@ Un système automatisé permettant de :
              ▼
 ┌────────────────────────────────────────────────────────────┐
 │           GOOGLE CLOUD RUN                                  │
-│  Service: highlights-processor                              │
-│  Image: gcr.io/PROJECT_ID/highlights-processor             │
+│  Service: highlights-orchestrator                              │
+│  Image: gcr.io/PROJECT_ID/highlights-orchestrator             │
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │  highlight_orchestrator_cloud.py                     │  │
 │  │  - Détecte nouveaux fichiers                         │  │
@@ -507,7 +507,7 @@ subfolder_id = drive.create_folder(
 Security:
   ingress: internal-and-cloud-load-balancing  # Pas d'accès public direct
   authentication: require-authentication      # JWT obligatoire
-  service-account: highlights-processor@PROJECT.iam.gserviceaccount.com
+  service-account: highlights-orchestrator@PROJECT.iam.gserviceaccount.com
 
 Permissions IAM:
   - roles/run.invoker → Cloud Scheduler uniquement
@@ -543,7 +543,7 @@ Permissions IAM:
 
 ### 8.1 Cloud Run Configuration
 
-**Service** : `highlights-processor`
+**Service** : `highlights-orchestrator`
 
 **Spécifications** :
 ```yaml
@@ -557,7 +557,7 @@ Max instances: 1 (pas de parallélisation)
 Execution environment: Gen2
 
 Container:
-  Image: gcr.io/transcription-whisper-automation/highlights-processor:latest
+  Image: gcr.io/transcription-whisper-automation/highlights-orchestrator:latest
   Port: 8080
 
 Environment variables:
@@ -574,14 +574,14 @@ Environment variables:
 
 ### 8.2 Cloud Scheduler
 
-**Job** : `highlights-processor-trigger`
+**Job** : `highlights-orchestrator-trigger`
 
 **Configuration** :
 ```yaml
 Schedule: "*/5 * * * *"  # Toutes les 5 minutes
 Timezone: Europe/Paris
 Target: HTTP POST
-URL: https://highlights-processor-HASH-ew.a.run.app/process
+URL: https://highlights-orchestrator-HASH-ew.a.run.app/process
 Auth: OIDC token
 Service account: cloud-scheduler@PROJECT.iam.gserviceaccount.com
 Retry: 3 attempts, exponential backoff
@@ -620,19 +620,19 @@ CMD ["python", "scripts/highlight_orchestrator_cloud.py"]
 **Build et Push** :
 ```bash
 # Build local
-docker build -t highlights-processor .
+docker build -t highlights-orchestrator .
 
 # Tag pour GCR
-docker tag highlights-processor \
-  gcr.io/transcription-whisper-automation/highlights-processor:latest
+docker tag highlights-orchestrator \
+  gcr.io/transcription-whisper-automation/highlights-orchestrator:latest
 
 # Push vers GCR
-docker push gcr.io/transcription-whisper-automation/highlights-processor:latest
+docker push gcr.io/transcription-whisper-automation/highlights-orchestrator:latest
 ```
 
 **Alternative : Cloud Build** :
 ```bash
-gcloud builds submit --tag gcr.io/transcription-whisper-automation/highlights-processor
+gcloud builds submit --tag gcr.io/transcription-whisper-automation/highlights-orchestrator
 ```
 
 ### 8.4 Commandes de Déploiement
@@ -644,7 +644,7 @@ gcloud auth activate-service-account \
   --key-file=config/credentials.json
 
 # 2. Build et deploy en une commande
-gcloud run deploy highlights-processor \
+gcloud run deploy highlights-orchestrator \
   --source . \
   --region=europe-west1 \
   --memory=4Gi \
@@ -655,20 +655,20 @@ gcloud run deploy highlights-processor \
   --concurrency=1 \
   --platform=managed \
   --allow-unauthenticated=false \
-  --service-account=highlights-processor@PROJECT.iam.gserviceaccount.com
+  --service-account=highlights-orchestrator@PROJECT.iam.gserviceaccount.com
 
 # 3. Vérifier déploiement
-gcloud run services describe highlights-processor --region=europe-west1
+gcloud run services describe highlights-orchestrator --region=europe-west1
 ```
 
 **Rollback** :
 ```bash
 # Lister les révisions
-gcloud run revisions list --service=highlights-processor --region=europe-west1
+gcloud run revisions list --service=highlights-orchestrator --region=europe-west1
 
 # Rollback vers révision précédente
-gcloud run services update-traffic highlights-processor \
-  --to-revisions=highlights-processor-00020-xyz=100 \
+gcloud run services update-traffic highlights-orchestrator \
+  --to-revisions=highlights-orchestrator-00020-xyz=100 \
   --region=europe-west1
 ```
 
@@ -681,7 +681,7 @@ gcloud run services update-traffic highlights-processor \
 **Accès logs** :
 ```bash
 # Logs en temps réel
-gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=highlights-processor" \
+gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=highlights-orchestrator" \
   --limit 50 --format json
 
 # Filtrer par niveau
@@ -1174,10 +1174,10 @@ python scripts/test_local.py \
   --video "path/to/source.mp4"
 
 # Docker build local
-docker build -t highlights-processor .
+docker build -t highlights-orchestrator .
 docker run -p 8080:8080 \
   -v $(pwd)/config:/app/config \
-  highlights-processor
+  highlights-orchestrator
 
 # Test endpoint
 curl -X POST http://localhost:8080/process
@@ -1186,34 +1186,34 @@ curl -X POST http://localhost:8080/process
 **Cloud Run** :
 ```bash
 # Déploiement rapide
-gcloud run deploy highlights-processor --source .
+gcloud run deploy highlights-orchestrator --source .
 
 # Logs temps réel
 gcloud logging tail "resource.type=cloud_run_revision"
 
 # Déclencher manuellement
-gcloud scheduler jobs run highlights-processor-trigger
+gcloud scheduler jobs run highlights-orchestrator-trigger
 
 # Lister révisions
-gcloud run revisions list --service=highlights-processor
+gcloud run revisions list --service=highlights-orchestrator
 
 # Supprimer anciennes révisions
-gcloud run revisions delete highlights-processor-00010-xyz
+gcloud run revisions delete highlights-orchestrator-00010-xyz
 ```
 
 **Cloud Scheduler** :
 ```bash
 # Vérifier état
-gcloud scheduler jobs describe highlights-processor-trigger
+gcloud scheduler jobs describe highlights-orchestrator-trigger
 
 # Pause
-gcloud scheduler jobs pause highlights-processor-trigger
+gcloud scheduler jobs pause highlights-orchestrator-trigger
 
 # Reprendre
-gcloud scheduler jobs resume highlights-processor-trigger
+gcloud scheduler jobs resume highlights-orchestrator-trigger
 
 # Modifier fréquence
-gcloud scheduler jobs update http highlights-processor-trigger \
+gcloud scheduler jobs update http highlights-orchestrator-trigger \
   --schedule="*/10 * * * *"  # Toutes les 10 min
 ```
 

@@ -27,7 +27,7 @@ VM_IMAGE_FAMILY="debian-11"
 VM_IMAGE_PROJECT="debian-cloud"
 
 # Cloud Scheduler
-SCHEDULER_JOB_NAME="trigger-highlights"
+SCHEDULER_JOB_NAME="highlights-orchestrator-trigger"
 SCHEDULER_SCHEDULE="*/5 * * * *"  # Toutes les 5 minutes
 SCHEDULER_TIMEZONE="Europe/Paris"
 

@@ -4,6 +4,7 @@ Extension Chrome pour marquer facilement les segments vidéo dans Google Docs av
 
 ## 🎯 Fonctionnalités
 
+- ✅ **Menu contextuel** : Clic droit sur texte sélectionné → Marquage direct (NOUVEAU!)
 - ✅ Barre d'outils flottante dans Google Docs
 - ✅ Marquage rapide S1 à S10
 - ✅ Segment personnalisé (S11, S20, etc.)
@@ -50,14 +51,20 @@ Une barre flottante **"🎬 Extraits Vidéo"** apparaît en haut à droite.
 
 ### 3. Marquer des segments
 
+**Méthode 1 (Recommandée) : Menu contextuel**
 1. **Sélectionnez** le texte à extraire
-2. **Cliquez** sur S1, S2, S3... dans la barre d'outils
+2. **Clic droit** → "🎬 Marquer segment" → S1, S2, S3...
 3. Les balises sont insérées automatiquement :
    ```
    🎬 S1 🎬
    Votre texte sélectionné...
    🎬 /S1 🎬
    ```
+
+**Méthode 2 : Barre d'outils**
+1. **Sélectionnez** le texte à extraire
+2. **Copiez** (Ctrl+C)
+3. **Cliquez** sur S1, S2, S3... dans la barre d'outils
 
 ### 4. Marquer comme PRÊT
 
@@ -201,6 +208,9 @@ chrome-extension/
 
 L'extension demande uniquement :
 - **activeTab** : Pour accéder à l'onglet Google Docs actif
+- **identity** : Pour s'authentifier avec Google Docs API
+- **contextMenus** : Pour ajouter le menu clic droit
+- **docs.googleapis.com** : Pour lire/modifier les Google Docs
 - Aucune donnée n'est envoyée à des serveurs externes
 
 ---

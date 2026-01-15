@@ -8,7 +8,7 @@ set -e
 
 PROJECT_ID="artificial-intelligence-cmk"
 REGION="europe-west1"
-SCHEDULER_JOB_NAME="trigger-highlights"
+SCHEDULER_JOB_NAME="highlights-orchestrator-trigger"
 SCHEDULER_SCHEDULE="*/5 * * * *"  # Toutes les 5 minutes
 SCHEDULER_TIMEZONE="Europe/Paris"
 CLOUD_RUN_NAME="highlights-orchestrator"
