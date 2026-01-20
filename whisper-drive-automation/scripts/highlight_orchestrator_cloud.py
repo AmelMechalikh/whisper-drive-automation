@@ -157,6 +157,8 @@ class HighlightsProcessor:
     def check_new_excel_files(self) -> list:
         """
         Vérifie s'il y a de nouveaux fichiers Excel non traités
+        Un Excel est considéré "à traiter" si le doc paragraphs_timestamps correspondant
+        a la balise READY mais PAS la balise PROCESSED
 
         Returns:
             Liste des fichiers Excel non traités
@@ -176,22 +178,54 @@ class HighlightsProcessor:
 
             base_name = excel_file['name'].replace('_highlights.xlsx', '')
 
-            # Chercher un sous-dossier commençant par base_name_segments
-            # (car maintenant on ajoute un timestamp: base_name_segments_2026-01-15_15h30m45s)
-            segments_folders = self.drive_manager.list_files_in_folder(
-                self.config['drive_folders']['segments_output'],
-                name_pattern=f"{base_name}_segments"
+            # Chercher le doc paragraphs_timestamps correspondant
+            doc_files = self.drive_manager.list_files_in_folder(
+                self.config['drive_folders']['transcriptions'],
+                name_pattern=f"{base_name}_paragraphs_timestamps"
             )
 
-            # Si pas de dossier trouvé, le fichier n'a pas été traité
-            folder_exists = any(
-                f.get('mimeType') == 'application/vnd.google-apps.folder'
-                for f in segments_folders
-            )
+            # Filtrer pour ne garder que les Google Docs
+            doc_files = [f for f in doc_files if f.get('mimeType') == 'application/vnd.google-apps.document']
 
-            if not folder_exists:
-                result.append(excel_file)
-                logger.info(f"✅ Trouvé: {excel_file['name']} (non traité)")
+            if not doc_files:
+                logger.warning(f"⚠️ Aucun doc paragraphs_timestamps trouvé pour: {excel_file['name']}")
+                continue
+
+            # Vérifier les balises READY et PROCESSED
+            try:
+                from googleapiclient.discovery import build
+                docs_service = build('docs', 'v1', credentials=self.drive_manager.creds)
+                doc = docs_service.documents().get(documentId=doc_files[0]['id']).execute()
+
+                # Extraire le texte
+                content = doc.get('body', {}).get('content', [])
+                text_parts = []
+                for element in content:
+                    if 'paragraph' in element:
+                        paragraph = element['paragraph']
+                        elements = paragraph.get('elements', [])
+                        for elem in elements:
+                            if 'textRun' in elem:
+                                text = elem['textRun'].get('content', '')
+                                text_parts.append(text)
+
+                text = ''.join(text_parts)
+
+                has_ready = '🎬 READY 🎬' in text or '🎬READY🎬' in text
+                has_processed = '🎬 PROCESSED 🎬' in text or '🎬PROCESSED🎬' in text
+
+                if has_processed:
+                    logger.info(f"⏭️  Ignoré (PROCESSED trouvé): {excel_file['name']}")
+                    continue
+
+                if has_ready:
+                    result.append(excel_file)
+                    logger.info(f"✅ Trouvé: {excel_file['name']} (READY sans PROCESSED)")
+                else:
+                    logger.info(f"⏭️  Ignoré (pas de READY): {excel_file['name']}")
+
+            except Exception as e:
+                logger.error(f"❌ Erreur vérification balises pour {excel_file['name']}: {e}")
 
         return result
 
@@ -358,13 +392,25 @@ class HighlightsProcessor:
         logger.info(f"🎬 Création job pour Excel: {excel_name}")
 
         try:
-            # 1. Trouver la vidéo source
+            # 1. Vérifier si un job existe déjà dans la queue pour ce base_name
+            queue_folder = self.config['drive_folders']['queue_highlights']
+            existing_jobs = self.drive_manager.list_files_in_folder(
+                queue_folder,
+                name_pattern=f"highlight_job_{base_name}"
+            )
+
+            is_reprocess = len(existing_jobs) > 0
+
+            if is_reprocess:
+                logger.info(f"🔄 Retraitement demandé: {len(existing_jobs)} job(s) existant(s) dans la queue")
+
+            # 2. Trouver la vidéo source
             source_file = self._find_source_video(base_name)
             if not source_file:
                 logger.warning(f"⚠️ Vidéo source non trouvée pour: {base_name}")
                 return None
 
-            # 2. Créer le job JSON
+            # 3. Créer le job JSON
             job_data = {
                 'excel_id': excel_id,
                 'excel_name': excel_name,
@@ -374,7 +420,13 @@ class HighlightsProcessor:
                 'created_at': datetime.now().isoformat()
             }
 
-            # 3. Uploader le job dans queue_highlights
+            # Ajouter info de reprocess si nécessaire
+            if is_reprocess:
+                job_data['reprocess_requested'] = True
+                job_data['reason'] = 'User removed PROCESSED flag'
+                job_data['existing_jobs_count'] = len(existing_jobs)
+
+            # 4. Uploader le job dans queue_highlights
             job_filename = f"highlight_job_{base_name}_{int(time.time())}.json"
             job_local_path = self.temp_dir / job_filename
 

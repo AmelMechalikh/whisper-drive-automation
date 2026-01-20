@@ -88,18 +88,24 @@ def get_orchestrator():
             return None
 
         creds_path = config_module.CREDENTIALS_PATH
-        logger.info(f"🔑 Tentative de chargement des credentials depuis: {creds_path}")
-        
-        if not Path(creds_path).exists():
-            logger.error(f"❌ Fichier credentials non trouvé: {creds_path}")
-            # Liste le contenu du répertoire pour diagnostiquer
-            creds_dir = Path(creds_path).parent
-            if creds_dir.exists():
-                files = list(creds_dir.glob('*'))
-                logger.info(f"📁 Contenu de {creds_dir}: {[f.name for f in files]}")
-            return None
-            
-        logger.info(f"✅ Credentials trouvés: {creds_path}")
+
+        # Si creds_path est None, on utilisera Application Default Credentials (service account Cloud Run)
+        if creds_path is None:
+            logger.info(f"🔑 CREDENTIALS_PATH est None - Utilisation d'Application Default Credentials")
+            logger.info(f"   Le DriveManager utilisera le service account de Cloud Run")
+        else:
+            logger.info(f"🔑 Tentative de chargement des credentials depuis: {creds_path}")
+
+            if not Path(creds_path).exists():
+                logger.error(f"❌ Fichier credentials non trouvé: {creds_path}")
+                # Liste le contenu du répertoire pour diagnostiquer
+                creds_dir = Path(creds_path).parent
+                if creds_dir.exists():
+                    files = list(creds_dir.glob('*'))
+                    logger.info(f"📁 Contenu de {creds_dir}: {[f.name for f in files]}")
+                return None
+
+            logger.info(f"✅ Credentials trouvés: {creds_path}")
 
         return DriveOrchestrator(config_module)
     except Exception as e:
@@ -216,15 +222,8 @@ def process_files():
                 'timestamp': start_time.isoformat()
             }), 500
 
-        # Récupérer fichiers récents avec SIZE
-        from google.oauth2.service_account import Credentials
-        from googleapiclient.discovery import build
-
-        credentials = Credentials.from_service_account_file(
-            orchestrator.config.CREDENTIALS_PATH,
-            scopes=['https://www.googleapis.com/auth/drive']
-        )
-        drive_service = build('drive', 'v3', credentials=credentials)
+        # Utiliser le drive_service de l'orchestrateur (qui a déjà les credentials)
+        drive_service = orchestrator.drive_manager.service
 
         # Paramètres de traitement
         request_data = request.get_json() or {}

@@ -28,7 +28,7 @@ COPY config/ config/
 
 # Variables d'environnement pour GCP et optimisations
 ENV PYTHONPATH=/app
-ENV GOOGLE_APPLICATION_CREDENTIALS=/app/config/credentials.json
+# GOOGLE_APPLICATION_CREDENTIALS non défini - Cloud Run utilisera ADC (Application Default Credentials)
 ENV PORT=8080
 ENV WHISPER_CACHE_DIR=/tmp/whisper
 
