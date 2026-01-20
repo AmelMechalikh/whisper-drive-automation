@@ -358,23 +358,34 @@ def process_files():
                             supportsAllDrives=True,
                             includeItemsFromAllDrives=True
                         ).execute()
-                        
+
                         existing_jobs = existing_jobs_result.get('files', [])
-                        
-                        # Si un job existe (même en erreur), on le supprime pour créer un nouveau job propre
+
+                        # Si un job existe déjà
                         if existing_jobs:
-                            for job in existing_jobs:
-                                job_name = job['name']
-                                is_error = job_name.startswith('error_')
-                                logger.info(f"🗑️  Suppression ancien job {'EN ERREUR' if is_error else ''}: {job_name}")
-                                try:
-                                    drive_service.files().delete(
-                                        fileId=job['id'],
-                                        supportsAllDrives=True
-                                    ).execute()
-                                    logger.info(f"✅ Job supprimé: {job_name}")
-                                except Exception as del_error:
-                                    logger.warning(f"⚠️  Impossible de supprimer {job_name}: {del_error}")
+                            # Vérifier si c'est un job en erreur ou un job normal
+                            error_jobs = [j for j in existing_jobs if j['name'].startswith('error_')]
+                            normal_jobs = [j for j in existing_jobs if j['name'].startswith('job_')]
+
+                            # Si un job NORMAL existe → SKIP (ne pas créer de doublon)
+                            if normal_jobs:
+                                logger.info(f"⏭️  Job déjà en attente pour: {file_name} → SKIP création doublon")
+                                results['skipped'].append(file_name)
+                                continue
+
+                            # Si seuls des jobs en ERREUR existent → les supprimer et créer un nouveau
+                            if error_jobs:
+                                for job in error_jobs:
+                                    job_name = job['name']
+                                    logger.info(f"🗑️  Suppression ancien job EN ERREUR: {job_name}")
+                                    try:
+                                        drive_service.files().delete(
+                                            fileId=job['id'],
+                                            supportsAllDrives=True
+                                        ).execute()
+                                        logger.info(f"✅ Job en erreur supprimé: {job_name}")
+                                    except Exception as del_error:
+                                        logger.warning(f"⚠️  Impossible de supprimer {job_name}: {del_error}")
                         
                         logger.info(f"📤 Création job VM: {file_name} (ID: {file_id})")
 
