@@ -121,30 +121,31 @@ def process_job(processor, drive_manager, job_file, queue_folder):
     """Traite un fichier job"""
     job_name = job_file['name']
     job_id = job_file['id']
-    
+
     logger.info("=" * 60)
     logger.info(f"🎯 Traitement du job: {job_name}")
-    
+
+    # Variable pour le nettoyage automatique
+    temp_path = None
+
     try:
         # Télécharger le fichier job
         with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as temp_file:
             temp_path = temp_file.name
-        
+
         success = drive_manager.download_file(job_id, job_name, temp_path)
-        
+
         if not success:
             logger.error(f"❌ Échec téléchargement job: {job_name}")
             return
-        
+
         # Lire le contenu du job
         with open(temp_path, 'r') as f:
             job_data = json.load(f)
-        
-        os.remove(temp_path)
-        
+
         file_id = job_data.get('file_id')
         file_name = job_data.get('file_name')
-        
+
         if not file_id:
             logger.error(f"❌ Job invalide (pas de file_id): {job_name}")
             # Supprimer le job invalide
@@ -200,7 +201,7 @@ def process_job(processor, drive_manager, job_file, queue_folder):
         logger.error(f"❌ Erreur traitement job {job_name}: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        
+
         # Renommer en erreur (ne pas lancer d'exception si échec)
         try:
             error_name = job_name.replace('job_', 'error_')
@@ -211,6 +212,15 @@ def process_job(processor, drive_manager, job_file, queue_folder):
             logger.info(f"⚠️  Job renommé en erreur: {error_name}")
         except Exception as rename_error:
             logger.warning(f"⚠️  Impossible de renommer le job en erreur: {rename_error}")
+
+    finally:
+        # 🧹 NETTOYAGE AUTOMATIQUE du fichier job temporaire
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+                logger.info(f"🧹 Fichier job temporaire supprimé: {temp_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️  Erreur nettoyage fichier job: {cleanup_error}")
 
 
 if __name__ == '__main__':

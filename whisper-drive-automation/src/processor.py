@@ -260,25 +260,29 @@ class WhisperDriveProcessor:
     def _process_single_file(self, file_info):
         """
         Traite un fichier audio complet
-        
+
         Args:
             file_info: Informations du fichier Drive
         """
         file_name = file_info['name']
         file_id = file_info['id']
-        
+
+        # Variables pour le nettoyage automatique
+        local_path = None
+        output_files = {}
+
         try:
             self.logger.info(f"🎯 Traitement: {file_name}")
-            
+
             # Vérifier si la transcription existe déjà
             from pathlib import Path
             base_filename = Path(file_name).stem
             output_folder_id = self.config.DRIVE_FOLDERS['output']
-            
+
             if self.drive_manager.transcription_exists(base_filename, output_folder_id):
                 self.logger.info(f"⏭️  Transcription déjà existante, skip: {file_name}")
                 return True  # Considéré comme succès car déjà fait
-            
+
             # 1. Téléchargement avec retry
             try:
                 local_path = self._download_file(file_info)
@@ -369,6 +373,43 @@ class WhisperDriveProcessor:
             self.logger.error(f"❌ Erreur traitement {file_name}: {e}")
             self.logger.error(traceback.format_exc())
             return False
+
+        finally:
+            # 🧹 NETTOYAGE AUTOMATIQUE GARANTI - même en cas d'erreur
+            self.logger.info("🧹 Nettoyage automatique des fichiers temporaires...")
+            try:
+                # Nettoyer le fichier audio téléchargé
+                if local_path and os.path.exists(local_path):
+                    file_size = os.path.getsize(local_path)
+                    os.remove(local_path)
+                    self.logger.info(f"   ✅ Fichier audio supprimé ({file_size} bytes): {local_path}")
+
+                    # Supprimer le dossier temporaire s'il est vide
+                    temp_dir = os.path.dirname(local_path)
+                    try:
+                        if os.path.exists(temp_dir) and not os.listdir(temp_dir):
+                            os.rmdir(temp_dir)
+                            self.logger.info(f"   ✅ Dossier temporaire supprimé: {temp_dir}")
+                    except OSError:
+                        pass  # Dossier non vide ou déjà supprimé
+
+                # Nettoyer les fichiers de sortie générés localement
+                if output_files:
+                    for file_type, file_path in output_files.items():
+                        # Ignorer les Google Docs (préfixe "gdoc:")
+                        if file_path and isinstance(file_path, str) and file_path.startswith("gdoc:"):
+                            continue
+
+                        # Supprimer les fichiers locaux
+                        if file_path and os.path.exists(file_path):
+                            file_size = os.path.getsize(file_path)
+                            os.remove(file_path)
+                            self.logger.info(f"   ✅ Fichier sortie supprimé ({file_size} bytes): {os.path.basename(file_path)}")
+
+                self.logger.info("✅ Nettoyage automatique terminé")
+
+            except Exception as cleanup_error:
+                self.logger.warning(f"⚠️ Erreur lors du nettoyage automatique: {cleanup_error}")
     
     def _download_file(self, file_info):
         """Télécharge un fichier depuis Drive"""
