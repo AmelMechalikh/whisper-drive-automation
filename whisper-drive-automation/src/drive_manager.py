@@ -159,6 +159,7 @@ class DriveManager:
     def download_file(self, file_id, file_name, download_path):
         """
         Télécharge un fichier depuis Drive avec retry automatique
+        Gère aussi les Google Docs en les exportant en texte
 
         Args:
             file_id: ID du fichier Drive
@@ -176,11 +177,28 @@ class DriveManager:
         # Créer le dossier de destination
         os.makedirs(os.path.dirname(download_path), exist_ok=True)
 
-        # Téléchargement
-        request = self.service.files().get_media(
+        # Vérifier le type de fichier
+        file_metadata = self.service.files().get(
             fileId=file_id,
+            fields='mimeType',
             supportsAllDrives=True
-        )
+        ).execute()
+
+        mime_type = file_metadata.get('mimeType', '')
+
+        # Si c'est un Google Doc, utiliser export au lieu de get_media
+        if 'application/vnd.google-apps' in mime_type:
+            self.logger.info(f"📄 Google Doc détecté, export en texte...")
+            request = self.service.files().export_media(
+                fileId=file_id,
+                mimeType='text/plain'
+            )
+        else:
+            # Téléchargement binaire normal
+            request = self.service.files().get_media(
+                fileId=file_id,
+                supportsAllDrives=True
+            )
 
         with open(download_path, 'wb') as file_handle:
             downloader = MediaIoBaseDownload(file_handle, request)

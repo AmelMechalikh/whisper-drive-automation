@@ -5,11 +5,14 @@
     "transcriptions": "1yHcy9um2_We459w9I0cITwHBGXKTlOJa",
     "excel_output": "1krgRVj3Wp18sNY7cL7PwR2vVUtaX2jCj",
     "segments_output": "1ly79uNIJBUqxQ5yjVOmtTlISemHTBxiP",
-    "queue_highlights": "1Dc5kkTvBOSYXuB103vAwYHTpPAsW8G9Q"
+    "queue_highlights": "1Dc5kkTvBOSYXuB103vAwYHTpPAsW8G9Q",
+    "completed_jobs": "1KhcY5pdGUMdiEeJNC01UNjsLcyNmJ7RD",
+    "failed_jobs": "1XbDgFtAKZCDOKm-wOo0tp9dDLMyKPbGA"
   },
   "processing": {
     "watch_interval_seconds": 300,
     "temp_dir": "./temp_highlights",
-    "extraction_method": "inline_markers"
+    "extraction_method": "inline_markers",
+    "add_subtitles": true
   }
 }

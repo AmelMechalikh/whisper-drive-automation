@@ -3,8 +3,10 @@ flask==3.0.0
 
 # Whisper et traitement audio
 openai-whisper==20231117
-torch==2.1.1
-torchaudio==2.1.1
+torch==2.8.0  # Requis par WhisperX 3.7.4
+torchaudio==2.8.0  # Requis par WhisperX 3.7.4
+whisperx==3.7.4  # Pour l'alignement forcé des sous-titres (version stable compatible torch 2.8)
+faster-whisper>=1.1.1  # Dépendance de WhisperX 3.7.4
 
 # Google Cloud et Drive
 google-cloud-storage==2.10.0
@@ -14,8 +16,8 @@ google-auth-oauthlib==1.1.0
 google-auth-httplib2==0.1.1
 
 # Traitement de données
-pandas==2.1.3
-numpy==1.24.3
+pandas>=2.2.3,<2.3.0  # Requis par WhisperX 3.7.4
+numpy>=2.0.2,<2.1.0  # Requis par WhisperX 3.7.4
 openpyxl==3.1.2
 
 # Cloud Run orchestrator

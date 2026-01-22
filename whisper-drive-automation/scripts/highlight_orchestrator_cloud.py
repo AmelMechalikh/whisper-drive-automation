@@ -93,14 +93,15 @@ class HighlightsProcessor:
                     base_name_check = base_name_check[:-len(suffix)]
                     break
 
-            # Vérifier si un Excel existe déjà pour ce fichier
-            excel_name = f"{base_name_check}_highlights.xlsx"
+            # Vérifier si un Excel existe déjà
             existing_excel = self.drive_manager.list_files_in_folder(
                 self.config['drive_folders']['excel_output'],
-                name_pattern=excel_name
+                name_pattern=f"{base_name_check}_highlights.xlsx"
             )
+
             if existing_excel:
-                logger.info(f"⏭️  Ignoré (Excel existe déjà): {file_info['name']} → {excel_name}")
+                logger.info(f"⏭️  Ignoré (Excel existe déjà): {file_info['name']} → {base_name_check}_highlights.xlsx")
+                logger.info(f"   (Sera traité via check_new_excel_files si READY sans PROCESSED)")
                 continue
 
             # Vérifier si le fichier a la balise READY
@@ -134,10 +135,11 @@ class HighlightsProcessor:
 
                 # Vérifier les balises
                 has_ready = '🎬 READY 🎬' in text or '🎬READY🎬' in text
-                has_processed = '🎬 PROCESSED 🎬' in text or '🎬PROCESSED🎬' in text
+                has_processed = ('🎬 PROCESSED 🎬' in text or '🎬PROCESSED🎬' in text or
+                                '🎬 REPROCESSED 🎬' in text or '🎬REPROCESSED🎬' in text)
 
                 if has_processed:
-                    logger.info(f"⏭️  Ignoré (déjà traité - balise PROCESSED): {file_info['name']}")
+                    logger.info(f"⏭️  Ignoré (déjà traité - balise PROCESSED/REPROCESSED): {file_info['name']}")
                     continue
 
                 if has_ready:
@@ -212,10 +214,11 @@ class HighlightsProcessor:
                 text = ''.join(text_parts)
 
                 has_ready = '🎬 READY 🎬' in text or '🎬READY🎬' in text
-                has_processed = '🎬 PROCESSED 🎬' in text or '🎬PROCESSED🎬' in text
+                has_processed = ('🎬 PROCESSED 🎬' in text or '🎬PROCESSED🎬' in text or
+                                '🎬 REPROCESSED 🎬' in text or '🎬REPROCESSED🎬' in text)
 
                 if has_processed:
-                    logger.info(f"⏭️  Ignoré (PROCESSED trouvé): {excel_file['name']}")
+                    logger.info(f"⏭️  Ignoré (PROCESSED/REPROCESSED trouvé): {excel_file['name']}")
                     continue
 
                 if has_ready:
@@ -231,7 +234,7 @@ class HighlightsProcessor:
 
     def mark_as_processed(self, file_id: str, mime_type: str):
         """
-        Marque un fichier comme PROCESSED en ajoutant la balise à la fin
+        Marque un fichier comme PROCESSED ou REPROCESSED en ajoutant la balise à la fin
 
         Args:
             file_id: ID du fichier Google Doc
@@ -249,19 +252,41 @@ class HighlightsProcessor:
                 # Calculer l'index de la fin du document
                 content = doc.get('body', {}).get('content', [])
                 if not content:
-                    logger.warning(f"Document vide, impossible d'ajouter la balise PROCESSED")
+                    logger.warning(f"Document vide, impossible d'ajouter la balise")
                     return
+
+                # Extraire le texte pour vérifier si c'est un retraitement
+                text_parts = []
+                for element in content:
+                    if 'paragraph' in element:
+                        paragraph = element['paragraph']
+                        elements = paragraph.get('elements', [])
+                        for elem in elements:
+                            if 'textRun' in elem:
+                                text = elem['textRun'].get('content', '')
+                                text_parts.append(text)
+
+                full_text = ''.join(text_parts)
+
+                # Vérifier si c'est un retraitement (PROCESSED ou REPROCESSED déjà présent)
+                is_reprocess = ('🎬 PROCESSED 🎬' in full_text or
+                               '🎬PROCESSED🎬' in full_text or
+                               '🎬 REPROCESSED 🎬' in full_text or
+                               '🎬REPROCESSED🎬' in full_text)
+
+                # Choisir la balise appropriée
+                tag = '🎬 REPROCESSED 🎬' if is_reprocess else '🎬 PROCESSED 🎬'
 
                 # Le dernier élément contient l'index de fin
                 end_index = content[-1].get('endIndex', 1) - 1
 
-                # Insérer la balise PROCESSED à la fin
+                # Insérer la balise à la fin
                 requests = [{
                     'insertText': {
                         'location': {
                             'index': end_index
                         },
-                        'text': '\n\n🎬 PROCESSED 🎬\n'
+                        'text': f'\n\n{tag}\n'
                     }
                 }]
 
@@ -270,19 +295,27 @@ class HighlightsProcessor:
                     body={'requests': requests}
                 ).execute()
 
-                logger.info(f"✅ Balise PROCESSED ajoutée au document")
+                logger.info(f"✅ Balise {tag} ajoutée au document")
 
             # Pour les fichiers texte, on ne peut pas les modifier facilement via l'API
             # On skip pour l'instant
         except Exception as e:
-            logger.warning(f"⚠️ Erreur lors de l'ajout de la balise PROCESSED: {e}")
+            logger.warning(f"⚠️ Erreur lors de l'ajout de la balise: {e}")
 
-    def process_highlighted_file(self, file_info: dict):
-        """Traite un fichier avec commentaires → génère Excel"""
+    def process_highlighted_file(self, file_info: dict, existing_excel_id: str = None):
+        """
+        Traite un fichier avec commentaires → génère ou met à jour Excel
+
+        Args:
+            file_info: Info du fichier paragraphs_timestamps
+            existing_excel_id: ID de l'Excel existant à mettre à jour (si reprocess)
+        """
         file_name = file_info['name']
         file_id = file_info['id']
-        
-        logger.info(f"📋 Traitement: {file_name}")
+
+        is_reprocess = existing_excel_id is not None
+        action = "Retraitement" if is_reprocess else "Traitement"
+        logger.info(f"📋 {action}: {file_name}")
         
         try:
             # Extraire le nom de base (enlever les suffixes possibles)
@@ -351,32 +384,46 @@ class HighlightsProcessor:
             if not excel_path:
                 logger.warning(f"⚠️ Aucun highlight extrait pour {file_name}")
                 return None
-            
-            # Upload l'Excel sur Drive
-            excel_filename = Path(excel_path).name
-            excel_id = self.drive_manager.upload_file(
-                excel_path,
-                excel_filename,
-                self.config['drive_folders']['excel_output']
-            )
-            
-            logger.info(f"✅ Excel créé et uploadé: {excel_filename} (ID: {excel_id})")
 
-            # Marquer le document comme PROCESSED
-            self.mark_as_processed(file_id, file_info.get('mimeType', ''))
+            excel_filename = Path(excel_path).name
+
+            # Mettre à jour Excel existant ou créer nouveau
+            if existing_excel_id:
+                logger.info(f"🔄 Mise à jour de l'Excel existant: {excel_filename}")
+                from googleapiclient.http import MediaFileUpload
+                media = MediaFileUpload(excel_path, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                self.drive_manager.service.files().update(
+                    fileId=existing_excel_id,
+                    media_body=media,
+                    supportsAllDrives=True
+                ).execute()
+                excel_id = existing_excel_id
+                logger.info(f"✅ Excel mis à jour: {excel_filename} (ID: {excel_id})")
+            else:
+                logger.info(f"📤 Création d'un nouvel Excel: {excel_filename}")
+                excel_id = self.drive_manager.upload_file(
+                    excel_path,
+                    excel_filename,
+                    self.config['drive_folders']['excel_output']
+                )
+                logger.info(f"✅ Excel créé et uploadé: {excel_filename} (ID: {excel_id})")
+
+            # Marquer le document comme PROCESSED seulement si ce n'est PAS un reprocess
+            # (pour reprocess, la VM marquera après avoir découpé les segments)
+            if not existing_excel_id:
+                self.mark_as_processed(file_id, file_info.get('mimeType', ''))
+                logger.info(f"✅ Document marqué comme PROCESSED")
+            else:
+                logger.info(f"⏳ Document sera marqué REPROCESSED par la VM après découpage")
 
             # Marquer comme traité dans cette instance
             self.processed_files.add(file_id)
 
-            return excel_path
-            
-            logger.info(f"✅ Excel créé: {excel_filename}")
-            
-            # Nettoyer
+            # Nettoyer le fichier temporaire
             Path(excel_path).unlink()
-            
+
             return excel_filename
-            
+
         except Exception as e:
             logger.error(f"❌ Erreur traitement {file_name}: {e}")
             import traceback
@@ -384,49 +431,72 @@ class HighlightsProcessor:
             return None
     
     def process_excel_file(self, excel_info: dict):
-        """Crée un job pour traiter un Excel → la VM s'en occupera"""
+        """
+        Retraite un Excel existant (reprocess)
+        1. Régénère l'Excel à partir du doc paragraphs avec les nouveaux marqueurs
+        2. Crée un job pour découper la vidéo
+        """
         excel_name = excel_info['name']
         excel_id = excel_info['id']
         base_name = excel_name.replace('_highlights.xlsx', '')
 
-        logger.info(f"🎬 Création job pour Excel: {excel_name}")
+        logger.info(f"🔄 Retraitement Excel: {excel_name}")
 
         try:
-            # 1. Vérifier si un job existe déjà dans la queue pour ce base_name
+            # 1. Trouver le doc paragraphs_timestamps correspondant
+            doc_files = self.drive_manager.list_files_in_folder(
+                self.config['drive_folders']['transcriptions'],
+                name_pattern=f"{base_name}_paragraphs_timestamps"
+            )
+            doc_files = [f for f in doc_files if f.get('mimeType') == 'application/vnd.google-apps.document']
+
+            if not doc_files:
+                logger.error(f"❌ Doc paragraphs_timestamps non trouvé pour: {base_name}")
+                return None
+
+            doc_file = doc_files[0]
+            logger.info(f"📄 Doc paragraphs trouvé: {doc_file['name']}")
+
+            # 2. Régénérer l'Excel avec les nouveaux segments
+            logger.info(f"📝 Régénération de l'Excel avec les nouveaux segments...")
+            regenerated_excel = self.process_highlighted_file(doc_file, existing_excel_id=excel_id)
+
+            if not regenerated_excel:
+                logger.error(f"❌ Échec de la régénération de l'Excel")
+                return None
+
+            logger.info(f"✅ Excel régénéré: {regenerated_excel}")
+
+            # 3. Vérifier si un job existe déjà dans la queue
             queue_folder = self.config['drive_folders']['queue_highlights']
             existing_jobs = self.drive_manager.list_files_in_folder(
                 queue_folder,
                 name_pattern=f"highlight_job_{base_name}"
             )
 
-            is_reprocess = len(existing_jobs) > 0
+            if existing_jobs:
+                logger.info(f"⚠️  {len(existing_jobs)} job(s) déjà en queue - ignoré pour éviter doublon")
+                return None
 
-            if is_reprocess:
-                logger.info(f"🔄 Retraitement demandé: {len(existing_jobs)} job(s) existant(s) dans la queue")
-
-            # 2. Trouver la vidéo source
+            # 4. Trouver la vidéo source
             source_file = self._find_source_video(base_name)
             if not source_file:
                 logger.warning(f"⚠️ Vidéo source non trouvée pour: {base_name}")
                 return None
 
-            # 3. Créer le job JSON
+            # 5. Créer le job JSON avec flag reprocess
             job_data = {
                 'excel_id': excel_id,
                 'excel_name': excel_name,
                 'source_id': source_file['id'],
                 'source_name': source_file['name'],
                 'base_name': base_name,
-                'created_at': datetime.now().isoformat()
+                'created_at': datetime.now().isoformat(),
+                'reprocess_requested': True,
+                'reason': 'Excel regenerated with new segments'
             }
 
-            # Ajouter info de reprocess si nécessaire
-            if is_reprocess:
-                job_data['reprocess_requested'] = True
-                job_data['reason'] = 'User removed PROCESSED flag'
-                job_data['existing_jobs_count'] = len(existing_jobs)
-
-            # 4. Uploader le job dans queue_highlights
+            # 6. Uploader le job dans queue_highlights
             job_filename = f"highlight_job_{base_name}_{int(time.time())}.json"
             job_local_path = self.temp_dir / job_filename
 
@@ -434,7 +504,7 @@ class HighlightsProcessor:
                 json.dump(job_data, f, indent=2)
 
             queue_folder = self.config['drive_folders']['queue_highlights']
-            job_id = self.drive_manager.upload_file(
+            _ = self.drive_manager.upload_file(
                 str(job_local_path),
                 job_filename,
                 queue_folder

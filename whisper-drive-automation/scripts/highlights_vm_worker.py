@@ -125,6 +125,86 @@ def main():
     return 0
 
 
+def mark_paragraphs_as_processed(drive_manager, base_name, is_reprocess, config):
+    """Marque le document _paragraphs_timestamps comme PROCESSED ou REPROCESSED"""
+    try:
+        from googleapiclient.discovery import build
+
+        # Chercher le doc paragraphs_timestamps
+        transcriptions_folder = config['drive_folders']['transcriptions']
+        search_name = f"{base_name}_paragraphs_timestamps"
+
+        files = drive_manager.list_files_in_folder(
+            transcriptions_folder,
+            name_pattern=search_name
+        )
+
+        if not files:
+            logger.warning(f"⚠️ Document paragraphs_timestamps non trouvé: {search_name}")
+            return
+
+        doc_file = files[0]
+        file_id = doc_file['id']
+        mime_type = doc_file.get('mimeType', '')
+
+        if mime_type != 'application/vnd.google-apps.document':
+            logger.warning(f"⚠️ Fichier n'est pas un Google Doc: {mime_type}")
+            return
+
+        # Utiliser l'API Docs pour ajouter la balise
+        docs_service = build('docs', 'v1', credentials=drive_manager.creds)
+        doc = docs_service.documents().get(documentId=file_id).execute()
+
+        # Extraire le texte pour vérifier si c'est un retraitement
+        content = doc.get('body', {}).get('content', [])
+        if not content:
+            logger.warning(f"⚠️ Document vide")
+            return
+
+        # Extraire le texte complet
+        text_parts = []
+        for element in content:
+            if 'paragraph' in element:
+                paragraph = element['paragraph']
+                elements = paragraph.get('elements', [])
+                for elem in elements:
+                    if 'textRun' in elem:
+                        text = elem['textRun'].get('content', '')
+                        text_parts.append(text)
+
+        full_text = ''.join(text_parts)
+
+        # Vérifier si déjà marqué
+        has_processed = ('🎬 PROCESSED 🎬' in full_text or '🎬PROCESSED🎬' in full_text or
+                        '🎬 REPROCESSED 🎬' in full_text or '🎬REPROCESSED🎬' in full_text)
+
+        # Choisir la balise appropriée
+        tag = '🎬 REPROCESSED 🎬' if (is_reprocess or has_processed) else '🎬 PROCESSED 🎬'
+
+        # Le dernier élément contient l'index de fin
+        end_index = content[-1].get('endIndex', 1) - 1
+
+        # Insérer la balise à la fin
+        requests = [{
+            'insertText': {
+                'location': {'index': end_index},
+                'text': f'\n\n{tag}\n'
+            }
+        }]
+
+        docs_service.documents().batchUpdate(
+            documentId=file_id,
+            body={'requests': requests}
+        ).execute()
+
+        logger.info(f"✅ Balise {tag} ajoutée au document {search_name}")
+
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur lors de l'ajout de la balise PROCESSED: {e}")
+        import traceback
+        logger.warning(traceback.format_exc())
+
+
 def process_highlights_job(drive_manager, video_extractor, job_file, config, temp_dir):
     """Traite un job de highlights"""
     job_name = job_file['name']
@@ -151,6 +231,7 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
         source_id = job_data.get('source_id')
         source_name = job_data.get('source_name')
         base_name = job_data.get('base_name')
+        is_reprocess = job_data.get('reprocess_requested', False)
 
         if not all([excel_id, source_id, base_name]):
             logger.error(f"❌ Job invalide: {job_name}")
@@ -185,13 +266,27 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
 
         if not created_segments:
             logger.warning(f"⚠️ Aucun segment créé")
-            # Marquer comme erreur
-            error_name = job_name.replace('highlight_job_', 'highlight_error_')
-            drive_manager.service.files().update(
-                fileId=job_id,
-                body={'name': error_name},
-                supportsAllDrives=True
-            ).execute()
+            # Marquer comme failed
+            failed_folder = config['drive_folders'].get('failed_jobs')
+            failed_name = job_name.replace('highlight_job_', 'failed_')
+
+            if failed_folder:
+                drive_manager.service.files().update(
+                    fileId=job_id,
+                    addParents=failed_folder,
+                    removeParents=config['drive_folders']['queue_highlights'],
+                    body={'name': failed_name},
+                    supportsAllDrives=True
+                ).execute()
+                logger.info(f"⚠️  Job déplacé vers failed_jobs: {failed_name}")
+            else:
+                # Fallback: renommer en erreur dans la queue
+                drive_manager.service.files().update(
+                    fileId=job_id,
+                    body={'name': failed_name},
+                    supportsAllDrives=True
+                ).execute()
+                logger.info(f"⚠️  Job renommé: {failed_name}")
             return
 
         logger.info(f"✅ {len(created_segments)} segment(s) créé(s)")
@@ -237,7 +332,11 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
 
         logger.info(f"✅ {len(created_segments)} segment(s) uploadé(s)")
 
-        # 7. Nettoyer
+        # 7. Marquer le document paragraphs_timestamps comme PROCESSED/REPROCESSED
+        logger.info(f"📝 Marquage du document comme {'REPROCESSED' if is_reprocess else 'PROCESSED'}...")
+        mark_paragraphs_as_processed(drive_manager, base_name, is_reprocess, config)
+
+        # 8. Nettoyer
         logger.info(f"🧹 Nettoyage...")
         import shutil
         for file in temp_dir.glob(f"{base_name}*"):
@@ -249,12 +348,29 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
             except Exception as e:
                 logger.warning(f"Erreur nettoyage {file}: {e}")
 
-        # 8. Supprimer le job
-        logger.info(f"🗑️  Suppression du job: {job_name}")
-        drive_manager.service.files().delete(
-            fileId=job_id,
-            supportsAllDrives=True
-        ).execute()
+        # 9. Marquer le job comme completed et le déplacer vers completed_jobs
+        completed_folder = config['drive_folders'].get('completed_jobs')
+
+        if completed_folder:
+            logger.info(f"📦 Archivage du job dans completed_jobs...")
+            completed_name = job_name.replace('highlight_job_', 'completed_')
+
+            # Déplacer vers le dossier completed et renommer
+            drive_manager.service.files().update(
+                fileId=job_id,
+                addParents=completed_folder,
+                removeParents=config['drive_folders']['queue_highlights'],
+                body={'name': completed_name},
+                supportsAllDrives=True
+            ).execute()
+            logger.info(f"✅ Job archivé: {completed_name}")
+        else:
+            # Fallback: supprimer si pas de dossier completed configuré
+            logger.info(f"🗑️  Suppression du job: {job_name}")
+            drive_manager.service.files().delete(
+                fileId=job_id,
+                supportsAllDrives=True
+            ).execute()
 
         logger.info(f"✅ Job terminé avec succès")
 

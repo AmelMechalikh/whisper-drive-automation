@@ -8,7 +8,7 @@ echo "==========================================="
 
 PROJECT_ID="artificial-intelligence-cmk"
 REGION="europe-west1"
-SERVICE_NAME="highlights-processor"
+SERVICE_NAME="highlights-orchestrator"
 
 echo "Projet: $PROJECT_ID"
 echo "Région: $REGION"
