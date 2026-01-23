@@ -8,8 +8,8 @@ RUN apt-get update && apt-get install -y \
 # Répertoire de travail
 WORKDIR /app
 
-# Copie des fichiers de requirements
-COPY requirements.txt .
+# Copie des fichiers de requirements (version légère sans torch/whisperx)
+COPY deployments/highlights/requirements-orchestrator.txt ./requirements.txt
 
 # Installation des dépendances Python
 RUN pip install --no-cache-dir -r requirements.txt
