@@ -44,7 +44,8 @@ def main():
     logger.info("")
 
     # Déclencher le reprocess
-    result = processor.reprocess_excel_file(excel_id, excel_name)
+    excel_info = {'id': excel_id, 'name': excel_name}
+    result = processor.process_excel_file(excel_info)
 
     if result:
         logger.info("=" * 60)
