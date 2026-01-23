@@ -19,7 +19,6 @@ sys.path.insert(0, '/app/src')
 
 from drive_manager import DriveManager
 from highlight_extractor import HighlightExtractor
-from video_segment_extractor import VideoSegmentExtractor
 
 # Import pour gérer la VM
 from google.cloud import compute_v1
@@ -43,8 +42,7 @@ class HighlightsProcessor:
         # Initialiser les composants
         self.drive_manager = DriveManager(credentials_path)
         self.highlight_extractor = HighlightExtractor(logger)
-        self.video_extractor = VideoSegmentExtractor(logger)
-        
+
         # Dossiers temporaires
         self.temp_dir = Path('/tmp/highlights')
         self.temp_dir.mkdir(parents=True, exist_ok=True)

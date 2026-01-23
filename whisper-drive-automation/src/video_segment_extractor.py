@@ -12,7 +12,6 @@ from typing import List, Dict, Optional
 from datetime import timedelta
 import json
 import re
-import torch
 
 
 class VideoSegmentExtractor:
@@ -22,15 +21,17 @@ class VideoSegmentExtractor:
         """
         Args:
             logger: Logger optionnel
-            add_subtitles: Si True, ajoute des sous-titres brûlés avec style Instagram
-            paragraphs_file: Chemin vers le fichier _paragraphs_timestamps.txt (source de vérité)
+            add_subtitles: DEPRECATED - Les sous-titres sont gérés par subtitle_generator.py
+            paragraphs_file: DEPRECATED - Les sous-titres sont gérés par subtitle_generator.py
         """
         self.logger = logger or logging.getLogger(__name__)
-        self.add_subtitles = add_subtitles
+
+        if add_subtitles:
+            self.logger.warning("⚠️ add_subtitles=True is deprecated. Subtitles feature moved to subtitle_generator.py module.")
+            self.logger.warning("   VideoSegmentExtractor now only handles simple video cutting with ffmpeg.")
+
+        self.add_subtitles = False  # Force désactivation
         self.paragraphs_file = paragraphs_file
-        self.whisperx_model = None
-        self.whisperx_align_model = None
-        self.whisperx_metadata = None
     
     def extract_segments(
         self,
@@ -56,11 +57,6 @@ class VideoSegmentExtractor:
         # Créer le dossier de sortie
         output_dir = Path(output_folder)
         output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Créer le dossier pour les sous-titres si nécessaire
-        subtitles_dir = output_dir / "subtitles"
-        if self.add_subtitles:
-            subtitles_dir.mkdir(parents=True, exist_ok=True)
 
         # Nom de base du fichier source (sans extension)
         source_name = Path(source_video_path).stem
@@ -101,22 +97,13 @@ class VideoSegmentExtractor:
                 output_filename = f"{comment}_{start_str}-{end_str}{source_ext}"
                 output_path = output_dir / output_filename
 
-                # Utiliser extraction avec sous-titres si activé
-                if self.add_subtitles:
-                    success = self._extract_segment_with_subtitles(
-                        source_video_path,
-                        str(output_path),
-                        seg['start'],
-                        seg['duration'],
-                        subtitles_dir
-                    )
-                else:
-                    success = self._extract_segment_ffmpeg(
-                        source_video_path,
-                        str(output_path),
-                        seg['start'],
-                        seg['duration']
-                    )
+                # Extraction simple avec ffmpeg
+                success = self._extract_segment_ffmpeg(
+                    source_video_path,
+                    str(output_path),
+                    seg['start'],
+                    seg['duration']
+                )
 
                 if success:
                     created_files.append(str(output_path))
@@ -187,11 +174,20 @@ class VideoSegmentExtractor:
         return created_files
 
     def _load_whisperx_models(self):
-        """Charge les modèles WhisperX pour l'alignement forcé (une seule fois)"""
-        if self.whisperx_model is not None:
-            return  # Déjà chargé
+        """
+        DEPRECATED: Subtitles feature moved to subtitle_generator.py
+        This method is kept for backward compatibility but raises an error.
+        """
+        raise NotImplementedError(
+            "Subtitles feature has been moved to subtitle_generator.py module. "
+            "VideoSegmentExtractor now only handles simple video cutting with ffmpeg. "
+            "Set add_subtitles=False or use the new SubtitleGenerator class."
+        )
 
+    def _load_whisperx_models_OLD(self):
+        """OLD VERSION - DO NOT USE"""
         try:
+            import torch
             import whisperx
 
             # Fix pour PyTorch 2.8+ weights_only issue

@@ -158,12 +158,78 @@ gcloud scheduler jobs create http highlights-orchestrator \
 ./scripts/deploy_highlights_to_vm.sh
 ```
 
-## État actuel (2026-01-12)
+## Isolation des dépendances (IMPORTANT)
 
-❌ **INCORRECT**: Orchestrateur déployé sur VM (tourne 24/7)
-✅ **CORRECT**: Worker déployé sur VM
+### ⚠️ Problème identifié (2026-01-23)
 
-**À FAIRE:**
-1. Déployer orchestrateur sur Cloud Run
-2. Configurer Cloud Scheduler
-3. Arrêter l'orchestrateur sur la VM
+**Symptôme**: Cloud Run crashe avec SIGABRT lors du scan de fichiers
+```
+[SSL] record layer failure (_ssl.c:2590)
+free(): invalid next size (normal)
+Uncaught signal: 6, pid=2, tid=7
+```
+
+**Cause**: `VideoSegmentExtractor` charge des bibliothèques lourdes:
+- `torch` (PyTorch - ~2GB)
+- `torchaudio`
+- `whisperx` (pour sous-titres)
+- `numpy`, `pandas`
+
+**Impact**:
+- Mémoire excessive dans Cloud Run (serverless)
+- Corruption mémoire OpenSSL sous charge
+- Crash pendant appels API Google Drive
+
+### ✅ Solution: Séparation des responsabilités
+
+| Composant | Dépendances | Rôle |
+|-----------|-------------|------|
+| **Cloud Run Orchestrator** | pandas, google-api-python-client | Scan Drive, crée Excel, génère jobs |
+| **VM Worker (actuelle)** | ffmpeg, pandas | Découpe vidéos (SANS sous-titres) |
+| **VM Subtitles (future)** | torch, whisperx, ffmpeg | Génère sous-titres brûlés |
+
+### 🚀 Architecture future (sous-titres)
+
+```
+Cloud Run Orchestrator
+    │
+    ├─> Crée JOB (type: "segments")      ──> VM Worker (vidéos simples)
+    │
+    └─> Crée JOB (type: "subtitles")     ──> VM Subtitles (avec whisperx)
+```
+
+**Avantages**:
+- Cloud Run léger et stable
+- VM Worker rapide (pas de torch)
+- VM Subtitles isolée (coûts seulement si sous-titres demandés)
+- Pas de mélange de dépendances conflictuelles
+
+### 📝 Notes implémentation
+
+**NE JAMAIS faire**:
+```python
+# ❌ DANS CLOUD RUN - PROVOQUE CRASHES
+from video_segment_extractor import VideoSegmentExtractor  # Charge torch!
+```
+
+**Toujours faire**:
+```python
+# ✅ DANS CLOUD RUN - Léger
+from highlight_extractor import HighlightExtractor  # Pandas seulement
+```
+
+**Pour sous-titres futurs**:
+- Créer `subtitles_vm_worker.py` séparé
+- Installer torch/whisperx UNIQUEMENT sur cette VM
+- Job JSON avec flag: `"add_subtitles": true`
+
+## État actuel (2026-01-23)
+
+✅ **Cloud Run**: Orchestrateur déployé (léger, sans torch)
+✅ **VM Worker**: Découpe vidéos (sans sous-titres)
+🔜 **VM Subtitles**: À créer si besoin sous-titres
+
+**Derniers fixes:**
+1. ✅ Suppression import VideoSegmentExtractor de l'orchestrator
+2. ✅ Filtrage server-side des _paragraphs_timestamps
+3. ✅ Création automatique de jobs pour nouveaux fichiers
