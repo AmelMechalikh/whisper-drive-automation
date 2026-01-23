@@ -399,7 +399,9 @@ class HighlightsProcessor:
                 ).execute()
                 excel_id = existing_excel_id
                 logger.info(f"✅ Excel mis à jour: {excel_filename} (ID: {excel_id})")
+                logger.info(f"⏳ Document sera marqué REPROCESSED par la VM après découpage")
             else:
+                # Nouveau fichier - créer l'Excel ET le job pour découper la vidéo
                 logger.info(f"📤 Création d'un nouvel Excel: {excel_filename}")
                 excel_id = self.drive_manager.upload_file(
                     excel_path,
@@ -408,13 +410,15 @@ class HighlightsProcessor:
                 )
                 logger.info(f"✅ Excel créé et uploadé: {excel_filename} (ID: {excel_id})")
 
-            # Marquer le document comme PROCESSED seulement si ce n'est PAS un reprocess
-            # (pour reprocess, la VM marquera après avoir découpé les segments)
-            if not existing_excel_id:
-                self.mark_as_processed(file_id, file_info.get('mimeType', ''))
-                logger.info(f"✅ Document marqué comme PROCESSED")
-            else:
-                logger.info(f"⏳ Document sera marqué REPROCESSED par la VM après découpage")
+                # Créer le job pour découper les segments vidéo
+                job_created = self._create_video_job(base_name, excel_id, excel_filename, is_reprocess=False)
+
+                if job_created:
+                    logger.info(f"✅ Job créé - la VM découpera les segments et marquera PROCESSED")
+                else:
+                    # Si pas de vidéo source, marquer quand même PROCESSED pour ne pas reboucler
+                    self.mark_as_processed(file_id, file_info.get('mimeType', ''))
+                    logger.info(f"⚠️ Pas de job créé - document marqué PROCESSED pour éviter la boucle")
 
             # Marquer comme traité dans cette instance
             self.processed_files.add(file_id)
@@ -467,7 +471,37 @@ class HighlightsProcessor:
 
             logger.info(f"✅ Excel régénéré: {regenerated_excel}")
 
-            # 3. Vérifier si un job existe déjà dans la queue
+            # 3. Créer le job pour découper la vidéo (avec flag reprocess)
+            job_created = self._create_video_job(base_name, excel_id, excel_name, is_reprocess=True)
+
+            if job_created:
+                # Marquer comme traité pour ne pas recréer le job
+                self.processed_files.add(excel_id)
+                return 1  # 1 job créé
+            else:
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ Erreur création job pour {excel_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def _create_video_job(self, base_name: str, excel_id: str, excel_name: str, is_reprocess: bool = False) -> bool:
+        """
+        Crée un job pour découper les segments vidéo
+
+        Args:
+            base_name: Nom de base du fichier
+            excel_id: ID de l'Excel
+            excel_name: Nom de l'Excel
+            is_reprocess: True si c'est un retraitement
+
+        Returns:
+            True si le job a été créé, False sinon
+        """
+        try:
+            # 1. Vérifier si un job existe déjà dans la queue
             queue_folder = self.config['drive_folders']['queue_highlights']
             existing_jobs = self.drive_manager.list_files_in_folder(
                 queue_folder,
@@ -476,15 +510,15 @@ class HighlightsProcessor:
 
             if existing_jobs:
                 logger.info(f"⚠️  {len(existing_jobs)} job(s) déjà en queue - ignoré pour éviter doublon")
-                return None
+                return False
 
-            # 4. Trouver la vidéo source
+            # 2. Trouver la vidéo source
             source_file = self._find_source_video(base_name)
             if not source_file:
                 logger.warning(f"⚠️ Vidéo source non trouvée pour: {base_name}")
-                return None
+                return False
 
-            # 5. Créer le job JSON avec flag reprocess
+            # 3. Créer le job JSON
             job_data = {
                 'excel_id': excel_id,
                 'excel_name': excel_name,
@@ -492,18 +526,17 @@ class HighlightsProcessor:
                 'source_name': source_file['name'],
                 'base_name': base_name,
                 'created_at': datetime.now().isoformat(),
-                'reprocess_requested': True,
-                'reason': 'Excel regenerated with new segments'
+                'reprocess_requested': is_reprocess,
+                'reason': 'Excel regenerated with new segments' if is_reprocess else 'New highlights file'
             }
 
-            # 6. Uploader le job dans queue_highlights
+            # 4. Uploader le job dans queue_highlights
             job_filename = f"highlight_job_{base_name}_{int(time.time())}.json"
             job_local_path = self.temp_dir / job_filename
 
             with open(job_local_path, 'w') as f:
                 json.dump(job_data, f, indent=2)
 
-            queue_folder = self.config['drive_folders']['queue_highlights']
             _ = self.drive_manager.upload_file(
                 str(job_local_path),
                 job_filename,
@@ -516,21 +549,18 @@ class HighlightsProcessor:
             logger.info(f"✅ Job créé: {job_filename}")
             logger.info(f"   Vidéo: {source_file['name']} (sera traitée par la VM)")
 
-            # Marquer comme traité pour ne pas recréer le job
-            self.processed_files.add(excel_id)
-
-            return 1  # 1 job créé
+            return True
 
         except Exception as e:
             logger.error(f"❌ Erreur création job pour {excel_name}: {e}")
             import traceback
             traceback.print_exc()
-            return None
-    
+            return False
+
     def _find_source_video(self, base_name: str) -> dict:
         """Cherche la vidéo source correspondante"""
         video_extensions = ['.mp4', '.mp3', '.wav', '.m4a', '.mov', '.avi']
-        
+
         for ext in video_extensions:
             search_name = f"{base_name}{ext}"
             files = self.drive_manager.list_files_in_folder(
@@ -539,7 +569,7 @@ class HighlightsProcessor:
             )
             if files:
                 return files[0]
-        
+
         return None
     
     def _get_or_create_subfolder(self, folder_name: str) -> str:
