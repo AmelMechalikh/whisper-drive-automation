@@ -61,16 +61,14 @@ class HighlightsProcessor:
         """
         logger.info("🔍 Vérification fichiers PRÊTS dans transcriptions...")
 
-        # Scanner le dossier transcriptions au lieu de highlighted_files
+        # Scanner le dossier transcriptions - filtrer directement les _paragraphs_timestamps
         transcription_files = self.drive_manager.list_files_in_folder(
-            self.config['drive_folders']['transcriptions']
+            self.config['drive_folders']['transcriptions'],
+            name_pattern='_paragraphs_timestamps'
         )
 
         result = []
         for file_info in transcription_files:
-            # Ne traiter que les fichiers _paragraphs_timestamps
-            if '_paragraphs_timestamps' not in file_info['name']:
-                continue
 
             logger.info(f"📄 Fichier détecté: {file_info['name']} (type: {file_info.get('mimeType', 'unknown')})")
 

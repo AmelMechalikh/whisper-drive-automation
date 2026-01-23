@@ -49,7 +49,12 @@ def main():
         logger.info("🔧 Initialisation...")
         credentials_path = str(current_dir / 'config' / 'credentials.json')
         drive_manager = DriveManager(credentials_path=credentials_path)
-        video_extractor = VideoSegmentExtractor(logger)
+
+        # Lire le paramètre add_subtitles depuis la config
+        add_subtitles = config['processing'].get('add_subtitles', False)
+        logger.info(f"📺 Sous-titres: {'ACTIVÉS' if add_subtitles else 'DÉSACTIVÉS'}")
+
+        video_extractor = VideoSegmentExtractor(logger, add_subtitles=add_subtitles)
 
         temp_dir = Path('/tmp/highlights')
         temp_dir.mkdir(exist_ok=True)
