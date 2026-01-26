@@ -122,22 +122,13 @@ class VideoSegmentExtractor:
                     subseg_filename = f"{comment}_{start_str}-{end_str}{source_ext}"
                     subseg_path = output_dir / subseg_filename
 
-                    # Utiliser extraction avec sous-titres si activé
-                    if self.add_subtitles:
-                        success = self._extract_segment_with_subtitles(
-                            source_video_path,
-                            str(subseg_path),
-                            seg['start'],
-                            seg['duration'],
-                            subtitles_dir
-                        )
-                    else:
-                        success = self._extract_segment_ffmpeg(
-                            source_video_path,
-                            str(subseg_path),
-                            seg['start'],
-                            seg['duration']
-                        )
+                    # Note: subtitles feature moved to subtitle_generator.py
+                    success = self._extract_segment_ffmpeg(
+                        source_video_path,
+                        str(subseg_path),
+                        seg['start'],
+                        seg['duration']
+                    )
 
                     if success:
                         created_files.append(str(subseg_path))
@@ -154,8 +145,7 @@ class VideoSegmentExtractor:
                     source_video_path,
                     str(fusion_path),
                     segments_to_merge,
-                    output_dir,
-                    subtitles_dir
+                    output_dir
                 )
 
                 if success:
@@ -164,11 +154,7 @@ class VideoSegmentExtractor:
                 else:
                     self.logger.error(f"❌ Échec fusion segment {segment_num}")
         
-        # Ajouter les fichiers de sous-titres à la liste des fichiers créés
-        if self.add_subtitles and subtitles_dir.exists():
-            subtitle_files = list(subtitles_dir.glob("*"))
-            created_files.extend([str(f) for f in subtitle_files])
-            self.logger.info(f"📝 {len(subtitle_files)} fichier(s) de sous-titres créé(s)")
+        # Note: Subtitles feature has been moved to subtitle_generator.py
 
         self.logger.info(f"🎬 {len(created_files)} fichier(s) total créé(s)")
         return created_files
@@ -576,7 +562,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             # -ss : position de départ (AVANT -i pour éviter écran noir)
             # -i : input file
             # -t : durée
-            # -c copy : copie les streams sans réencoder
+            # -c:v copy : copie le stream vidéo sans réencoder (rapide)
+            # -c:a aac : ré-encode l'audio en AAC (compatible partout, évite les problèmes de codec)
             # -avoid_negative_ts make_zero : évite les problèmes de timestamps négatifs
             cmd = [
                 'ffmpeg',
@@ -584,20 +571,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 '-ss', str(start_seconds),
                 '-i', input_path,
                 '-t', str(duration),
-                '-c', 'copy',
+                '-c:v', 'copy',
+                '-c:a', 'aac',
                 '-avoid_negative_ts', 'make_zero',
                 '-y',  # Overwrite output file
                 output_path
             ]
             
             # Exécuter ffmpeg
-            result = subprocess.run(
+            subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 check=True
             )
-            
+
             return True
             
         except subprocess.CalledProcessError as e:
@@ -615,8 +603,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         input_path: str,
         output_path: str,
         segments: List[Dict],
-        temp_dir: Path,
-        subtitles_dir: Path
+        temp_dir: Path
     ) -> bool:
         """
         Extrait plusieurs segments et les fusionne en une seule vidéo
@@ -626,7 +613,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             output_path: Fichier de sortie final
             segments: Liste de dict avec 'start' et 'duration'
             temp_dir: Dossier temporaire pour les segments intermédiaires
-            subtitles_dir: Dossier pour les sous-titres (si activés)
 
         Returns:
             True si succès
@@ -634,26 +620,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         try:
             temp_segments = []
 
-            # 1. Extraire chaque segment individuellement (avec sous-titres si activés)
+            # 1. Extraire chaque segment individuellement
             for i, seg in enumerate(segments):
                 temp_output = temp_dir / f"temp_segment_{i}.mp4"
 
-                # Utiliser extraction avec sous-titres si activé
-                if self.add_subtitles:
-                    success = self._extract_segment_with_subtitles(
-                        input_path,
-                        str(temp_output),
-                        seg['start'],
-                        seg['duration'],
-                        subtitles_dir
-                    )
-                else:
-                    success = self._extract_segment_ffmpeg(
-                        input_path,
-                        str(temp_output),
-                        seg['start'],
-                        seg['duration']
-                    )
+                # Note: subtitles feature has been moved to subtitle_generator.py
+                # Always use simple extraction
+                success = self._extract_segment_ffmpeg(
+                    input_path,
+                    str(temp_output),
+                    seg['start'],
+                    seg['duration']
+                )
 
                 if success:
                     temp_segments.append(str(temp_output))
@@ -678,12 +656,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 '-f', 'concat',
                 '-safe', '0',
                 '-i', str(concat_file),
-                '-c', 'copy',
+                '-c:v', 'copy',
+                '-c:a', 'aac',
                 '-y',
                 output_path
             ]
-            
-            result = subprocess.run(
+
+            subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,

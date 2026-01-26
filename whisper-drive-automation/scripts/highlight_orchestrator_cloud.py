@@ -9,9 +9,12 @@ import sys
 import json
 import logging
 import time
+import hashlib
+import re
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, request, jsonify
+import pandas as pd
 
 # Ajouter src au path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
@@ -30,6 +33,43 @@ logger = logging.getLogger(__name__)
 PROJECT_ID = "artificial-intelligence-cmk"
 ZONE = "europe-west1-b"
 VM_NAME = "highlights-worker-vm"
+
+
+def calculate_segments_hash(segments_list):
+    """
+    Calcule un hash MD5 (8 caractères) basé uniquement sur les timestamps
+
+    Args:
+        segments_list: Liste de tuples (start, end) ou dicts avec 'start'/'end'
+
+    Returns:
+        Hash de 8 caractères (ex: "abc123de")
+    """
+    # Normaliser en liste de tuples (start, end)
+    pairs = []
+    for s in segments_list:
+        if isinstance(s, dict):
+            pairs.append((s['start'], s['end']))
+        else:
+            pairs.append(s)
+
+    # Créer chaîne : "10.5,20.3|30.2,45.7"
+    hash_input = "|".join([f"{start},{end}" for start, end in pairs])
+    return hashlib.md5(hash_input.encode()).hexdigest()[:8]
+
+
+def extract_hash_from_filename(filename):
+    """
+    Extrait le hash du nom de fichier Excel
+
+    Args:
+        filename: "GSE_du_8_janvier_highlights_abc123de.xlsx"
+
+    Returns:
+        Hash de 8 caractères ou None
+    """
+    match = re.search(r'_highlights_([a-f0-9]{8})\.xlsx$', filename)
+    return match.group(1) if match else None
 
 
 class HighlightsProcessor:
@@ -381,7 +421,29 @@ class HighlightsProcessor:
                 logger.warning(f"⚠️ Aucun highlight extrait pour {file_name}")
                 return None
 
-            excel_filename = Path(excel_path).name
+            # Lire l'Excel pour calculer le hash des timestamps
+            df = pd.read_excel(excel_path, engine='openpyxl')
+            segments = [(row['Début (secondes)'], row['Fin (secondes)']) for _, row in df.iterrows()]
+            segments_hash = calculate_segments_hash(segments)
+            logger.info(f"🔢 Hash calculé: {segments_hash}")
+
+            # Vérifier si un Excel avec ce hash existe déjà
+            existing_excel_files = self.drive_manager.list_files_in_folder(
+                self.config['drive_folders']['excel_output'],
+                name_pattern=f"{base_name}_highlights_*.xlsx"
+            )
+
+            for excel_file in existing_excel_files:
+                existing_hash = extract_hash_from_filename(excel_file['name'])
+                if existing_hash == segments_hash:
+                    logger.info(f"⏭️ Segments identiques (hash: {segments_hash}) - Excel existe déjà: {excel_file['name']}")
+                    logger.info(f"   Aucun job créé - pas de changement de contenu")
+                    # Nettoyer le fichier temporaire
+                    Path(excel_path).unlink()
+                    return None
+
+            # Hash nouveau - créer Excel avec hash dans le nom
+            excel_filename = f"{base_name}_highlights_{segments_hash}.xlsx"
 
             # Mettre à jour Excel existant ou créer nouveau
             if existing_excel_id:
@@ -398,7 +460,7 @@ class HighlightsProcessor:
                 logger.info(f"⏳ Document sera marqué REPROCESSED par la VM après découpage")
             else:
                 # Nouveau fichier - créer l'Excel ET le job pour découper la vidéo
-                logger.info(f"📤 Création d'un nouvel Excel: {excel_filename}")
+                logger.info(f"📤 Création d'un nouvel Excel avec hash: {excel_filename}")
                 excel_id = self.drive_manager.upload_file(
                     excel_path,
                     excel_filename,
@@ -438,7 +500,9 @@ class HighlightsProcessor:
         """
         excel_name = excel_info['name']
         excel_id = excel_info['id']
-        base_name = excel_name.replace('_highlights.xlsx', '')
+
+        # Extraire le base_name en enlevant _highlights_{hash}.xlsx ou _highlights.xlsx
+        base_name = re.sub(r'_highlights(_[a-f0-9]{8})?\.xlsx$', '', excel_name)
 
         logger.info(f"🔄 Retraitement Excel: {excel_name}")
 
@@ -507,6 +571,17 @@ class HighlightsProcessor:
             if existing_jobs:
                 logger.info(f"⚠️  {len(existing_jobs)} job(s) déjà en queue - ignoré pour éviter doublon")
                 return False
+
+            # 2. Vérifier si un job completed existe déjà (ne pas recréer un job déjà terminé avec succès)
+            completed_folder = self.config['drive_folders'].get('completed_jobs')
+            if completed_folder:
+                completed_jobs = self.drive_manager.list_files_in_folder(
+                    completed_folder,
+                    name_pattern=f"completed_{base_name}"
+                )
+                if completed_jobs:
+                    logger.info(f"⏭️  Job déjà terminé avec succès (dans completed_jobs) - ignoré")
+                    return False
 
             # 2. Trouver la vidéo source
             source_file = self._find_source_video(base_name)
