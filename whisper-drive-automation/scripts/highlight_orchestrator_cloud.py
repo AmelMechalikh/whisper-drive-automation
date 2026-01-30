@@ -460,10 +460,24 @@ class HighlightsProcessor:
                 existing_hash = extract_hash_from_filename(excel_file['name'])
                 if existing_hash == segments_hash:
                     logger.info(f"⏭️ Segments identiques (hash: {segments_hash}) - Excel existe déjà: {excel_file['name']}")
-                    logger.info(f"   Aucun job créé - pas de changement de contenu")
-                    # Nettoyer le fichier temporaire
-                    Path(excel_path).unlink()
-                    return None
+                    existing_excel_id = excel_file['id']
+
+                    # Vérifier si un job existe pour cet Excel (failure recovery)
+                    job_exists = self._check_job_exists_for_excel(base_name, existing_excel_id)
+
+                    if job_exists:
+                        logger.info(f"   Job existe déjà - aucune action nécessaire")
+                        Path(excel_path).unlink()
+                        return None
+                    else:
+                        logger.info(f"   ⚠️  Job manquant - création du job (failure recovery)")
+                        # Créer le job pour cet Excel existant
+                        job_created = self._create_video_job(base_name, existing_excel_id, excel_file['name'], is_reprocess=False)
+                        Path(excel_path).unlink()
+
+                        if job_created:
+                            logger.info(f"✅ Job créé pour Excel existant (recovery)")
+                        return excel_file['name']
 
             # Hash nouveau - créer Excel avec hash dans le nom
             excel_filename = f"{base_name}_highlights_{segments_hash}.xlsx"
@@ -674,6 +688,38 @@ class HighlightsProcessor:
             traceback.print_exc()
             return False
 
+    def _check_job_exists_for_excel(self, base_name: str, excel_id: str) -> bool:
+        """
+        Vérifie si un job existe déjà pour un Excel spécifique
+
+        Args:
+            base_name: Nom de base du fichier
+            excel_id: ID de l'Excel à vérifier
+
+        Returns:
+            True si un job existe pour cet Excel, False sinon
+        """
+        try:
+            queue_folder = self.config['drive_folders']['queue_highlights']
+            existing_jobs = self.drive_manager.list_files_in_folder(
+                queue_folder,
+                name_pattern=f"highlight_job_{base_name}"
+            )
+
+            for job in existing_jobs:
+                try:
+                    job_content = self.drive_manager.download_file(job['id'])
+                    job_data = json.loads(job_content)
+                    if job_data.get('excel_id') == excel_id:
+                        return True
+                except Exception as e:
+                    logger.warning(f"⚠️  Erreur lecture job {job['name']}: {e}")
+
+            return False
+        except Exception as e:
+            logger.warning(f"⚠️  Erreur vérification jobs: {e}")
+            return False
+
     def _create_video_job(self, base_name: str, excel_id: str, excel_name: str, is_reprocess: bool = False) -> bool:
         """
         Crée un job pour découper les segments vidéo
@@ -689,27 +735,16 @@ class HighlightsProcessor:
         """
         try:
             # 1. Vérifier si un job existe déjà pour CET Excel (même excel_id)
+            if self._check_job_exists_for_excel(base_name, excel_id):
+                logger.info(f"⚠️  Job déjà en queue pour cet Excel - ignoré pour éviter doublon")
+                return False
+
+            # Si on arrive ici, pas de job pour cet Excel - création autorisée
             queue_folder = self.config['drive_folders']['queue_highlights']
             existing_jobs = self.drive_manager.list_files_in_folder(
                 queue_folder,
                 name_pattern=f"highlight_job_{base_name}"
             )
-
-            # Vérifier si un job existe pour le MÊME Excel (même excel_id)
-            for job in existing_jobs:
-                try:
-                    # Télécharger et lire le job JSON
-                    job_content = self.drive_manager.download_file(job['id'])
-                    job_data = json.loads(job_content)
-
-                    # Si le job est pour le même Excel, ne pas recréer
-                    if job_data.get('excel_id') == excel_id:
-                        logger.info(f"⚠️  Job déjà en queue pour cet Excel - ignoré pour éviter doublon")
-                        return False
-                except Exception as e:
-                    logger.warning(f"⚠️  Erreur lecture job {job['name']}: {e}")
-
-            # Si on arrive ici, soit pas de job, soit job pour un Excel différent (hash différent)
             if existing_jobs:
                 logger.info(f"ℹ️  {len(existing_jobs)} job(s) en queue mais pour un autre Excel - création autorisée")
 
