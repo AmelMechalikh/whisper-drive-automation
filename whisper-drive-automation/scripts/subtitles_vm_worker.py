@@ -82,10 +82,10 @@ def extract_audio_from_video(video_path: str, output_audio: str) -> bool:
     ]
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, stderr=subprocess.PIPE)
+        subprocess.run(cmd, check=True, capture_output=True)
         return True
     except subprocess.CalledProcessError as e:
-        logger.error(f"❌ Erreur extraction audio: {e.stderr.decode()}")
+        logger.error(f"❌ Erreur extraction audio: {e.stderr.decode() if e.stderr else 'Erreur inconnue'}")
         return False
 
 
