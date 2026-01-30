@@ -215,7 +215,7 @@ def burn_subtitles_into_video(video_path: str, ass_path: str, output_path: str) 
     ]
 
     try:
-        subprocess.run(cmd, check=True, capture_output=True, stderr=subprocess.PIPE)
+        subprocess.run(cmd, check=True, capture_output=True)
         return True
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ Erreur brûlage sous-titres: {e.stderr.decode()}")
