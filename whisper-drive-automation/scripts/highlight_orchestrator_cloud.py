@@ -22,6 +22,7 @@ sys.path.insert(0, '/app/src')
 
 from drive_manager import DriveManager
 from highlight_extractor import HighlightExtractor
+from hash_utils import calculate_segments_hash, extract_hash_from_filename
 
 # Import pour gérer la VM
 from google.cloud import compute_v1
@@ -33,43 +34,6 @@ logger = logging.getLogger(__name__)
 PROJECT_ID = "artificial-intelligence-cmk"
 ZONE = "europe-west1-b"
 VM_NAME = "highlights-worker-vm"
-
-
-def calculate_segments_hash(segments_list):
-    """
-    Calcule un hash MD5 (8 caractères) basé uniquement sur les timestamps
-
-    Args:
-        segments_list: Liste de tuples (start, end) ou dicts avec 'start'/'end'
-
-    Returns:
-        Hash de 8 caractères (ex: "abc123de")
-    """
-    # Normaliser en liste de tuples (start, end)
-    pairs = []
-    for s in segments_list:
-        if isinstance(s, dict):
-            pairs.append((s['start'], s['end']))
-        else:
-            pairs.append(s)
-
-    # Créer chaîne : "10.5,20.3|30.2,45.7"
-    hash_input = "|".join([f"{start},{end}" for start, end in pairs])
-    return hashlib.md5(hash_input.encode()).hexdigest()[:8]
-
-
-def extract_hash_from_filename(filename):
-    """
-    Extrait le hash du nom de fichier Excel
-
-    Args:
-        filename: "GSE_du_8_janvier_highlights_abc123de.xlsx"
-
-    Returns:
-        Hash de 8 caractères ou None
-    """
-    match = re.search(r'_highlights_([a-f0-9]{8})\.xlsx$', filename)
-    return match.group(1) if match else None
 
 
 class HighlightsProcessor:
