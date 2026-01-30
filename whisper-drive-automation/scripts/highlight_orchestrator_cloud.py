@@ -688,16 +688,30 @@ class HighlightsProcessor:
             True si le job a été créé, False sinon
         """
         try:
-            # 1. Vérifier si un job existe déjà dans la queue
+            # 1. Vérifier si un job existe déjà pour CET Excel (même excel_id)
             queue_folder = self.config['drive_folders']['queue_highlights']
             existing_jobs = self.drive_manager.list_files_in_folder(
                 queue_folder,
                 name_pattern=f"highlight_job_{base_name}"
             )
 
+            # Vérifier si un job existe pour le MÊME Excel (même excel_id)
+            for job in existing_jobs:
+                try:
+                    # Télécharger et lire le job JSON
+                    job_content = self.drive_manager.download_file(job['id'])
+                    job_data = json.loads(job_content)
+
+                    # Si le job est pour le même Excel, ne pas recréer
+                    if job_data.get('excel_id') == excel_id:
+                        logger.info(f"⚠️  Job déjà en queue pour cet Excel - ignoré pour éviter doublon")
+                        return False
+                except Exception as e:
+                    logger.warning(f"⚠️  Erreur lecture job {job['name']}: {e}")
+
+            # Si on arrive ici, soit pas de job, soit job pour un Excel différent (hash différent)
             if existing_jobs:
-                logger.info(f"⚠️  {len(existing_jobs)} job(s) déjà en queue - ignoré pour éviter doublon")
-                return False
+                logger.info(f"ℹ️  {len(existing_jobs)} job(s) en queue mais pour un autre Excel - création autorisée")
 
             # 2. Vérifier si un job completed existe déjà (ne pas recréer un job déjà terminé avec succès)
             completed_folder = self.config['drive_folders'].get('completed_jobs')
