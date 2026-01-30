@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 from datetime import datetime
 import sys
+import subprocess
 
 # Ajouter les chemins au PYTHONPATH
 # Sur la VM, le fichier est dans /opt/highlights-worker/
@@ -29,6 +30,102 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# FONCTIONS DE GÉNÉRATION SRT
+# ============================================================================
+
+def format_timestamp(seconds: float) -> str:
+    """Convertit secondes en format SRT: HH:MM:SS,mmm"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def extract_audio_from_segment(video_path: str, output_audio: str) -> bool:
+    """Extrait l'audio d'un segment vidéo"""
+    cmd = [
+        'ffmpeg',
+        '-i', video_path,
+        '-vn',
+        '-acodec', 'pcm_s16le',
+        '-ar', '16000',
+        '-ac', '1',
+        '-y',
+        output_audio
+    ]
+
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"❌ Erreur extraction audio: {e.stderr.decode() if e.stderr else 'Erreur inconnue'}")
+        return False
+
+
+def generate_srt_for_segment(video_path: str, output_srt: str) -> bool:
+    """
+    Génère un fichier SRT automatique pour un segment vidéo
+    Retourne True si réussi, False sinon
+    """
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        logger.error("❌ faster-whisper non installé - SRT non généré")
+        return False
+
+    # Extraire audio du segment
+    audio_path = str(Path(video_path).with_suffix('.wav'))
+
+    if not extract_audio_from_segment(video_path, audio_path):
+        return False
+
+    try:
+        # Charger le modèle Whisper
+        device = "cpu"
+        compute_type = "int8"
+        model = WhisperModel("base", device=device, compute_type=compute_type)
+
+        # Transcrire
+        segments, info = model.transcribe(audio_path, language="fr", word_timestamps=False)
+        segments_list = list(segments)
+
+        if not segments_list:
+            logger.warning(f"⚠️ Aucun segment transcrit pour {Path(video_path).name}")
+            return False
+
+        # Générer SRT
+        with open(output_srt, 'w', encoding='utf-8') as f:
+            for i, segment in enumerate(segments_list, 1):
+                start_time = format_timestamp(segment.start)
+                end_time = format_timestamp(segment.end)
+                text = segment.text.strip()
+
+                f.write(f"{i}\n")
+                f.write(f"{start_time} --> {end_time}\n")
+                f.write(f"{text}\n")
+                f.write("\n")
+
+        logger.info(f"✅ SRT généré: {len(segments_list)} segments")
+
+        # Nettoyer l'audio temporaire
+        Path(audio_path).unlink(missing_ok=True)
+
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Erreur génération SRT: {e}")
+        # Nettoyer l'audio temporaire en cas d'erreur
+        Path(audio_path).unlink(missing_ok=True)
+        return False
+
+
+# ============================================================================
+# FIN FONCTIONS SRT
+# ============================================================================
 
 def main():
     """Boucle principale du worker highlights"""
@@ -296,7 +393,24 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
 
         logger.info(f"✅ {len(created_segments)} segment(s) créé(s)")
 
-        # 4b. Supprimer la vidéo source pour libérer de l'espace
+        # 4b. Générer les SRT automatiques pour chaque segment
+        logger.info(f"📝 Génération des SRT automatiques...")
+        created_srts = []
+
+        for segment_path in created_segments:
+            segment_name = Path(segment_path).stem
+            srt_path = str(Path(segment_path).with_suffix('.srt'))
+
+            logger.info(f"   Génération SRT pour: {segment_name}")
+
+            if generate_srt_for_segment(segment_path, srt_path):
+                created_srts.append(srt_path)
+            else:
+                logger.warning(f"   ⚠️ SRT non généré pour: {segment_name}")
+
+        logger.info(f"✅ {len(created_srts)}/{len(created_segments)} SRT générés")
+
+        # 4c. Supprimer la vidéo source pour libérer de l'espace
         logger.info(f"🧹 Suppression de la vidéo source ({source_path.stat().st_size / 1024 / 1024:.1f} MB)...")
         source_path.unlink()
         logger.info(f"✅ Vidéo source supprimée")
@@ -320,22 +434,41 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
         subfolder_id = folder['id']
         logger.info(f"📁 Sous-dossier créé: {subfolder_name}")
 
-        # 6. Upload les segments (et les supprimer un par un pour économiser la RAM)
-        logger.info(f"📤 Upload des segments...")
-        uploaded_count = 0
+        # 6. Upload les segments et SRT (et les supprimer un par un pour économiser la RAM)
+        logger.info(f"📤 Upload des segments et SRT...")
+        uploaded_video_count = 0
+        uploaded_srt_count = 0
+
         for segment_path in created_segments:
             segment_name = Path(segment_path).name
+
+            # Upload le segment vidéo
             drive_manager.upload_file(
                 segment_path,
                 segment_name,
                 subfolder_id
             )
-            # Supprimer le segment immédiatement après upload
-            Path(segment_path).unlink()
-            uploaded_count += 1
-            logger.info(f"✅ Segment uploadé et supprimé ({uploaded_count}/{len(created_segments)}): {segment_name}")
+            uploaded_video_count += 1
+            logger.info(f"✅ Segment uploadé ({uploaded_video_count}/{len(created_segments)}): {segment_name}")
 
-        logger.info(f"✅ {len(created_segments)} segment(s) uploadé(s)")
+            # Upload le SRT correspondant (s'il existe)
+            srt_path = str(Path(segment_path).with_suffix('.srt'))
+            if Path(srt_path).exists():
+                srt_name = Path(srt_path).name
+                drive_manager.upload_file(
+                    srt_path,
+                    srt_name,
+                    subfolder_id
+                )
+                uploaded_srt_count += 1
+                logger.info(f"✅ SRT uploadé: {srt_name}")
+                # Supprimer le SRT
+                Path(srt_path).unlink()
+
+            # Supprimer le segment après upload
+            Path(segment_path).unlink()
+
+        logger.info(f"✅ {uploaded_video_count} segment(s) + {uploaded_srt_count} SRT uploadé(s)")
 
         # 7. Marquer le document paragraphs_timestamps comme PROCESSED/REPROCESSED
         logger.info(f"📝 Marquage du document comme {'REPROCESSED' if is_reprocess else 'PROCESSED'}...")

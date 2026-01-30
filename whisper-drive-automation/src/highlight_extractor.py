@@ -509,6 +509,48 @@ class HighlightExtractor:
         
         return highlights
 
+    def _normalize_french_word(self, word: str) -> str:
+        """
+        Normalisation complète pour le français
+
+        Gère:
+        - Accents: é→e, è→e, à→a, ù→u, ô→o, î→i, ü→u, ç→c
+        - Ligatures: œ→oe, æ→ae
+        - Apostrophes: ', '
+        - Traits d'union: -
+        - Ponctuation: , . ! ? ; : ( ) « » " '
+        - Majuscules → minuscules
+        - Espaces multiples → espace unique
+
+        Args:
+            word: Mot à normaliser
+
+        Returns:
+            Mot normalisé (sans accents, ponctuation, minuscules)
+        """
+        import unicodedata
+
+        # Retirer espaces début/fin
+        word = word.strip()
+
+        # Minuscules
+        word = word.lower()
+
+        # Remplacer ligatures françaises
+        word = word.replace('œ', 'oe').replace('æ', 'ae')
+
+        # Retirer tous les accents et diacritiques (NFD decomposition)
+        word = unicodedata.normalize('NFD', word)
+        word = ''.join(char for char in word if unicodedata.category(char) != 'Mn')
+
+        # Retirer apostrophes, traits d'union et toute ponctuation
+        word = re.sub(r"['\-',\.!?;:\(\)«»\"'']", '', word)
+
+        # Normaliser espaces multiples
+        word = ' '.join(word.split())
+
+        return word.strip()
+
     def _flatten_words_from_segments(self, segments: List[Dict]) -> List[Dict]:
         """
         Crée une liste plate de tous les mots avec gestion des apostrophes
@@ -531,24 +573,35 @@ class HighlightExtractor:
             for word_info in segment['words']:
                 word_text = word_info.get('word', '').strip()
 
-                # Si le mot commence par une apostrophe et qu'il y a un mot précédent, le fusionner
+                # Fusionner les mots composés avant normalisation
+                should_merge = False
+
+                # Cas 1: Mot commence par apostrophe (ex: 'est dans c'est)
                 if (word_text.startswith("'") or word_text.startswith("'")) and all_words:
+                    should_merge = True
+
+                # Cas 2: Mot commence par trait d'union (ex: -à, -dire dans c'est-à-dire)
+                elif word_text.startswith("-") and all_words:
+                    should_merge = True
+
+                if should_merge:
                     # Fusionner avec le mot précédent
                     prev_word = all_words[-1]
-                    # Retirer toutes les apostrophes pour uniformiser
-                    clean_text = word_text.replace("'", "").replace("'", "")
+                    # Normaliser et fusionner
+                    clean_text = self._normalize_french_word(word_text)
                     prev_word['word'] = prev_word['word'] + clean_text
                     prev_word['end'] = word_info.get('end', prev_word['end'])
                 else:
-                    # Nouveau mot - retirer les apostrophes pour uniformiser
-                    clean_text = word_text.replace("'", "").replace("'", "").lower()
-                    all_words.append({
-                        'word': clean_text,
-                        'start': word_info.get('start', 0),
-                        'end': word_info.get('end', 0),
-                        'index': global_index
-                    })
-                    global_index += 1
+                    # Nouveau mot - normalisation complète
+                    clean_text = self._normalize_french_word(word_text)
+                    if clean_text:  # Ne pas ajouter de mots vides
+                        all_words.append({
+                            'word': clean_text,
+                            'start': word_info.get('start', 0),
+                            'end': word_info.get('end', 0),
+                            'index': global_index
+                        })
+                        global_index += 1
 
         return all_words
 
@@ -571,13 +624,8 @@ class HighlightExtractor:
         """
         candidates = []
 
-        # Normaliser les mots de recherche
-        def normalize_word(w):
-            # Retirer ponctuation (y compris apostrophes)
-            w = re.sub(r"[,\.!?;:\(\)''']", '', w)
-            return w.lower().strip()
-
-        search_normalized = [normalize_word(w) for w in search_words if normalize_word(w)]
+        # Normaliser les mots de recherche (utilise la même normalisation que le transcript)
+        search_normalized = [self._normalize_french_word(w) for w in search_words if self._normalize_french_word(w)]
 
         if not search_normalized:
             return []
@@ -586,7 +634,8 @@ class HighlightExtractor:
         first_word = search_normalized[0]
 
         for i, word_info in enumerate(all_words):
-            word_norm = normalize_word(word_info['word'])
+            # Les mots dans all_words sont déjà normalisés par _flatten_words_from_segments
+            word_norm = word_info['word']
 
             # Si le premier mot matche, compter combien de mots consécutifs matchent
             if first_word == word_norm or first_word in word_norm or word_norm in first_word:
@@ -594,7 +643,8 @@ class HighlightExtractor:
 
                 # Compter les mots suivants qui matchent
                 for j in range(1, min(len(search_normalized), len(all_words) - i)):
-                    next_word_norm = normalize_word(all_words[i + j]['word'])
+                    # Les mots sont déjà normalisés
+                    next_word_norm = all_words[i + j]['word']
                     search_word_norm = search_normalized[j]
 
                     if search_word_norm == next_word_norm or search_word_norm in next_word_norm or next_word_norm in search_word_norm:
@@ -639,13 +689,16 @@ class HighlightExtractor:
         # Nettoyer le texte du highlight
         clean_text = self._clean_highlight_text(highlight_text)
 
-        # Extraire les mots normalisés
-        words = [w for w in clean_text.split() if w.strip()]
+        # Extraire et normaliser les mots (même normalisation que le transcript)
+        words = [self._normalize_french_word(w) for w in clean_text.split() if w.strip()]
+        # Filtrer les mots vides après normalisation
+        words = [w for w in words if w]
+
         if len(words) < 2:
             self.logger.warning(f"Pas assez de mots dans le highlight: {clean_text[:50]}")
             return None, None
 
-        self.logger.debug(f"🔍 Recherche de {len(words)} mots: '{clean_text[:80]}...'")
+        self.logger.debug(f"🔍 Recherche de {len(words)} mots normalisés: {words[:10]}...")
 
         # ÉTAPE 1: Aplatir tous les mots de tous les segments
         segments = complete_data.get('segments', [])

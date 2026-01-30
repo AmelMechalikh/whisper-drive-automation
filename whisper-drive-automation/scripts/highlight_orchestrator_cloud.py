@@ -268,6 +268,77 @@ class HighlightsProcessor:
 
         return result
 
+    def check_new_subtitles_requests(self) -> list:
+        """
+        Vérifie s'il y a de nouveaux fichiers marqués avec SUBTITLES
+        Un fichier est considéré "à sous-titrer" s'il a:
+        - La balise SUBTITLES
+        - La balise PROCESSED ou REPROCESSED (segments déjà créés)
+        - PAS de balise SUBTITLES_DONE (pas encore traité)
+
+        Returns:
+            Liste des fichiers _paragraphs_timestamps avec balise SUBTITLES
+        """
+        logger.info("🔍 Vérification demandes de sous-titres...")
+
+        # Scanner le dossier transcriptions pour les _paragraphs_timestamps
+        transcription_files = self.drive_manager.list_files_in_folder(
+            self.config['drive_folders']['transcriptions'],
+            name_pattern='_paragraphs_timestamps'
+        )
+
+        result = []
+        for file_info in transcription_files:
+            # Skip si déjà traité dans cette instance
+            if file_info['id'] in self.processed_files:
+                continue
+
+            mime_type = file_info.get('mimeType', '')
+            if mime_type != 'application/vnd.google-apps.document':
+                continue
+
+            try:
+                from googleapiclient.discovery import build
+                docs_service = build('docs', 'v1', credentials=self.drive_manager.creds)
+                doc = docs_service.documents().get(documentId=file_info['id']).execute()
+
+                # Extraire le texte
+                content = doc.get('body', {}).get('content', [])
+                text_parts = []
+                for element in content:
+                    if 'paragraph' in element:
+                        paragraph = element['paragraph']
+                        elements = paragraph.get('elements', [])
+                        for elem in elements:
+                            if 'textRun' in elem:
+                                text = elem['textRun'].get('content', '')
+                                text_parts.append(text)
+
+                text = ''.join(text_parts)
+
+                # Vérifier les balises
+                has_subtitles = '🎬 SUBTITLES 🎬' in text or '🎬SUBTITLES🎬' in text
+                has_processed = ('🎬 PROCESSED 🎬' in text or '🎬PROCESSED🎬' in text or
+                                '🎬 REPROCESSED 🎬' in text or '🎬REPROCESSED🎬' in text)
+                has_subtitles_done = '🎬 SUBTITLES_DONE 🎬' in text or '🎬SUBTITLES_DONE🎬' in text
+
+                if has_subtitles_done:
+                    logger.info(f"⏭️  Ignoré (déjà traité - balise SUBTITLES_DONE): {file_info['name']}")
+                    continue
+
+                if not has_processed:
+                    logger.info(f"⏭️  Ignoré (pas de segments - balise PROCESSED manquante): {file_info['name']}")
+                    continue
+
+                if has_subtitles:
+                    result.append(file_info)
+                    logger.info(f"✅ Trouvé: {file_info['name']} (marqué SUBTITLES)")
+
+            except Exception as e:
+                logger.error(f"❌ Erreur vérification balise SUBTITLES pour {file_info['name']}: {e}")
+
+        return result
+
     def mark_as_processed(self, file_id: str, mime_type: str):
         """
         Marque un fichier comme PROCESSED ou REPROCESSED en ajoutant la balise à la fin
@@ -546,7 +617,111 @@ class HighlightsProcessor:
             import traceback
             traceback.print_exc()
             return None
-    
+
+    def process_subtitles_request(self, doc_info: dict):
+        """
+        Traite une demande de sous-titrage
+        1. Trouve le dossier segments correspondant
+        2. Crée un job dans queue_subtitles
+
+        Args:
+            doc_info: Info du fichier _paragraphs_timestamps
+
+        Returns:
+            True si le job a été créé, False sinon
+        """
+        doc_name = doc_info['name']
+        doc_id = doc_info['id']
+
+        # Extraire le base_name
+        base_name = doc_name
+        for suffix in ['_paragraphs_timestamps.txt', '_paragraphs_timestamps', '__paragraphs_timestamps.txt', '__paragraphs_timestamps']:
+            if base_name.endswith(suffix):
+                base_name = base_name[:-len(suffix)]
+                break
+
+        logger.info(f"📺 Demande sous-titrage: {base_name}")
+
+        try:
+            # 1. Chercher le dossier segments le plus récent
+            segments_output_folder = self.config['drive_folders']['segments_output']
+
+            # Lister les dossiers dans segments_output
+            all_items = self.drive_manager.list_files_in_folder(
+                segments_output_folder,
+                name_pattern=f"{base_name}_segments"
+            )
+
+            # Filtrer pour ne garder que les dossiers
+            segment_folders = [
+                item for item in all_items
+                if item.get('mimeType') == 'application/vnd.google-apps.folder'
+            ]
+
+            if not segment_folders:
+                logger.warning(f"⚠️ Aucun dossier segments trouvé pour: {base_name}")
+                return False
+
+            # Prendre le plus récent (tri par nom qui contient timestamp)
+            segment_folders.sort(key=lambda x: x['name'], reverse=True)
+            segments_folder = segment_folders[0]
+
+            logger.info(f"📁 Dossier segments trouvé: {segments_folder['name']}")
+
+            # 2. Vérifier si un job existe déjà dans la queue
+            queue_subtitles_folder = self.config['drive_folders'].get('queue_subtitles')
+            if not queue_subtitles_folder:
+                logger.error(f"❌ Dossier queue_subtitles non configuré")
+                return False
+
+            existing_jobs = self.drive_manager.list_files_in_folder(
+                queue_subtitles_folder,
+                name_pattern=f"subtitles_job_{base_name}"
+            )
+
+            if existing_jobs:
+                logger.info(f"⚠️  {len(existing_jobs)} job(s) sous-titres déjà en queue - ignoré pour éviter doublon")
+                return False
+
+            # 3. Créer le job JSON
+            job_data = {
+                'doc_id': doc_id,
+                'doc_name': doc_name,
+                'base_name': base_name,
+                'segments_folder_id': segments_folder['id'],
+                'segments_folder_name': segments_folder['name'],
+                'created_at': datetime.now().isoformat()
+            }
+
+            # 4. Uploader le job dans queue_subtitles
+            job_filename = f"subtitles_job_{base_name}_{int(time.time())}.json"
+            job_local_path = self.temp_dir / job_filename
+
+            with open(job_local_path, 'w') as f:
+                json.dump(job_data, f, indent=2)
+
+            _ = self.drive_manager.upload_file(
+                str(job_local_path),
+                job_filename,
+                queue_subtitles_folder
+            )
+
+            # Nettoyer le fichier local
+            job_local_path.unlink()
+
+            logger.info(f"✅ Job sous-titres créé: {job_filename}")
+
+            # Marquer comme traité
+            self.processed_files.add(doc_id)
+
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Erreur création job sous-titres pour {base_name}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
     def _create_video_job(self, base_name: str, excel_id: str, excel_name: str, is_reprocess: bool = False) -> bool:
         """
         Crée un job pour découper les segments vidéo
@@ -739,6 +914,7 @@ class HighlightsProcessor:
             'highlighted_files_processed': 0,
             'excel_files_processed': 0,
             'segments_created': 0,
+            'subtitles_requests_processed': 0,
             'errors': []
         }
         
@@ -768,14 +944,31 @@ class HighlightsProcessor:
                 except Exception as e:
                     result['errors'].append(f"Excel file {excel_info['name']}: {str(e)}")
 
-            # 3. Démarrer la VM si des jobs ont été créés
+            # 3. Traiter les demandes de sous-titres
+            subtitles_requests = self.check_new_subtitles_requests()
+
+            for doc_info in subtitles_requests:
+                try:
+                    job_created = self.process_subtitles_request(doc_info)
+                    if job_created:
+                        result['subtitles_requests_processed'] += 1
+                        self.processed_files.add(doc_info['id'])
+                except Exception as e:
+                    result['errors'].append(f"Subtitles request {doc_info['name']}: {str(e)}")
+
+            # 4. Démarrer les VMs si des jobs ont été créés
             if result['excel_files_processed'] > 0:
-                logger.info(f"📥 {result['excel_files_processed']} job(s) créé(s) - démarrage de la VM...")
+                logger.info(f"📥 {result['excel_files_processed']} job(s) highlights créé(s) - démarrage de la VM...")
+                self.start_vm_if_needed()
+
+            # Démarrer la VM si des jobs de sous-titres ont été créés
+            if result['subtitles_requests_processed'] > 0:
+                logger.info(f"📺 {result['subtitles_requests_processed']} job(s) sous-titres créé(s) - démarrage de la VM...")
                 self.start_vm_if_needed()
 
             if result['errors']:
                 result['status'] = 'partial_success'
-            
+
             return result
             
         except Exception as e:
