@@ -483,15 +483,14 @@ def process_subtitles_job(drive_manager, job_file, config, temp_dir):
             logger.error(f"❌ Aucune vidéo sous-titrée créée")
             return
 
-        # 5. Créer dossier de sortie sur Drive
+        # 5. Créer dossier de sortie sur Drive (dans le dossier segments)
         timestamp = datetime.now().strftime('%Y-%m-%d_%Hh%Mm%Ss')
-        output_folder_name = f"{base_name}_with_subtitles_{timestamp}"
-        segments_output_folder = config['drive_folders']['segments_output']
+        output_folder_name = f"with_subtitles_{timestamp}"
 
         folder_metadata = {
             'name': output_folder_name,
             'mimeType': 'application/vnd.google-apps.folder',
-            'parents': [segments_output_folder]
+            'parents': [segments_folder_id]
         }
         folder = drive_manager.service.files().create(
             body=folder_metadata,
