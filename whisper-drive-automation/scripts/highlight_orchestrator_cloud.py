@@ -129,17 +129,6 @@ class HighlightsProcessor:
                     base_name_check = base_name_check[:-len(suffix)]
                     break
 
-            # Vérifier si un Excel existe déjà
-            existing_excel = self.drive_manager.list_files_in_folder(
-                self.config['drive_folders']['excel_output'],
-                name_pattern=f"{base_name_check}_highlights.xlsx"
-            )
-
-            if existing_excel:
-                logger.info(f"⏭️  Ignoré (Excel existe déjà): {file_info['name']} → {base_name_check}_highlights.xlsx")
-                logger.info(f"   (Sera traité via check_new_excel_files si READY sans PROCESSED)")
-                continue
-
             # Vérifier si le fichier a la balise READY
             try:
                 # Récupérer le contenu du document
