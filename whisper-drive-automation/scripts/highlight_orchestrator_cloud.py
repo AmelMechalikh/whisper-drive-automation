@@ -118,7 +118,7 @@ class HighlightsProcessor:
                     downloader = MediaIoBaseDownload(file_content, request)
                     done = False
                     while not done:
-                        status, done = downloader.next_chunk()
+                        _, done = downloader.next_chunk()
                     text = file_content.getvalue().decode('utf-8')
 
                 # Vérifier les balises
@@ -708,7 +708,16 @@ class HighlightsProcessor:
 
             for job in existing_jobs:
                 try:
-                    job_content = self.drive_manager.download_file(job['id'])
+                    # Lire le contenu du job JSON en mémoire
+                    import io
+                    request = self.drive_manager.service.files().get_media(fileId=job['id'])
+                    file_content = io.BytesIO()
+                    from googleapiclient.http import MediaIoBaseDownload
+                    downloader = MediaIoBaseDownload(file_content, request)
+                    done = False
+                    while not done:
+                        _, done = downloader.next_chunk()
+                    job_content = file_content.getvalue().decode('utf-8')
                     job_data = json.loads(job_content)
                     if job_data.get('excel_id') == excel_id:
                         return True
