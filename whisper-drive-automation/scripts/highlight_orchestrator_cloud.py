@@ -783,6 +783,7 @@ class HighlightsProcessor:
                 'base_name': base_name,
                 'created_at': datetime.now().isoformat(),
                 'reprocess_requested': is_reprocess,
+                'status': 'pending',
                 'reason': 'Excel regenerated with new segments' if is_reprocess else 'New highlights file'
             }
 
@@ -966,10 +967,39 @@ class HighlightsProcessor:
                 except Exception as e:
                     result['errors'].append(f"Subtitles request {doc_info['name']}: {str(e)}")
 
-            # 4. Démarrer les VMs si des jobs ont été créés
-            if result['excel_files_processed'] > 0:
-                logger.info(f"📥 {result['excel_files_processed']} job(s) highlights créé(s) - démarrage de la VM...")
+            # 4. Vérifier s'il y a des jobs en attente (status: pending) et démarrer la VM
+            queue_folder = self.config['drive_folders']['queue_highlights']
+            all_jobs = self.drive_manager.list_files_in_folder(queue_folder, name_pattern='highlight_job_')
+
+            # Compter les jobs pending
+            pending_count = 0
+            for job in all_jobs:
+                try:
+                    import io
+                    request = self.drive_manager.service.files().get_media(fileId=job['id'])
+                    file_content = io.BytesIO()
+                    from googleapiclient.http import MediaIoBaseDownload
+                    downloader = MediaIoBaseDownload(file_content, request)
+                    done = False
+                    while not done:
+                        _, done = downloader.next_chunk()
+                    job_content = file_content.getvalue().decode('utf-8')
+                    job_data = json.loads(job_content)
+
+                    # Vérifier le status (par défaut "pending" si le champ n'existe pas pour compatibilité)
+                    job_status = job_data.get('status', 'pending')
+                    if job_status == 'pending':
+                        pending_count += 1
+                except Exception as e:
+                    logger.warning(f"⚠️  Erreur lecture status job {job['name']}: {e}")
+                    # En cas d'erreur, considérer comme pending pour être safe
+                    pending_count += 1
+
+            if pending_count > 0:
+                logger.info(f"📥 {pending_count} job(s) highlights en attente (status: pending) - démarrage de la VM...")
                 self.start_vm_if_needed()
+            else:
+                logger.info(f"✅ Aucun job highlights en attente")
 
             # Démarrer la VM si des jobs de sous-titres ont été créés
             if result['subtitles_requests_processed'] > 0:

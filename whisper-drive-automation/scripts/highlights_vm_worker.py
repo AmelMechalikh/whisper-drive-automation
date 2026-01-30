@@ -307,6 +307,37 @@ def mark_paragraphs_as_processed(drive_manager, base_name, is_reprocess, config)
         logger.warning(traceback.format_exc())
 
 
+def update_job_status(drive_manager, job_id, job_data, status, reason=None):
+    """Met à jour le statut d'un job dans Drive"""
+    try:
+        job_data['status'] = status
+        job_data['updated_at'] = datetime.now().isoformat()
+        if reason:
+            job_data['reason'] = reason
+
+        # Créer un fichier temporaire avec les nouvelles données
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
+            json.dump(job_data, temp_file, indent=2)
+            temp_path = temp_file.name
+
+        # Upload pour remplacer le job existant
+        from googleapiclient.http import MediaFileUpload
+        media = MediaFileUpload(temp_path, mimetype='application/json', resumable=True)
+        drive_manager.service.files().update(
+            fileId=job_id,
+            media_body=media,
+            supportsAllDrives=True
+        ).execute()
+
+        # Nettoyer
+        os.remove(temp_path)
+        logger.info(f"✅ Status mis à jour: {status}" + (f" - {reason}" if reason else ""))
+        return True
+    except Exception as e:
+        logger.error(f"❌ Erreur mise à jour status: {e}")
+        return False
+
+
 def process_highlights_job(drive_manager, video_extractor, job_file, config, temp_dir):
     """Traite un job de highlights"""
     job_name = job_file['name']
@@ -314,6 +345,8 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
 
     logger.info("=" * 60)
     logger.info(f"🎯 Traitement du job: {job_name}")
+
+    job_data = None  # Pour pouvoir l'utiliser dans le except final
 
     try:
         # Télécharger le fichier job
@@ -327,6 +360,9 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
             job_data = json.load(f)
 
         os.remove(temp_path)
+
+        # Marquer le job comme "processing"
+        update_job_status(drive_manager, job_id, job_data, 'processing')
 
         excel_id = job_data.get('excel_id')
         excel_name = job_data.get('excel_name')
@@ -368,7 +404,11 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
 
         if not created_segments:
             logger.warning(f"⚠️ Aucun segment créé")
-            # Marquer comme failed
+
+            # Marquer comme failed avec la raison
+            update_job_status(drive_manager, job_id, job_data, 'failed', 'No segments created from Excel file')
+
+            # Déplacer vers failed_jobs
             failed_folder = config['drive_folders'].get('failed_jobs')
             failed_name = job_name.replace('highlight_job_', 'failed_')
 
@@ -486,7 +526,10 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
             except Exception as e:
                 logger.warning(f"Erreur nettoyage {file}: {e}")
 
-        # 9. Marquer le job comme completed et le déplacer vers completed_jobs
+        # 9. Marquer le job comme completed
+        update_job_status(drive_manager, job_id, job_data, 'completed', 'Job processed successfully')
+
+        # 10. Déplacer le job vers completed_jobs
         completed_folder = config['drive_folders'].get('completed_jobs')
 
         if completed_folder:
@@ -515,19 +558,38 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
     except Exception as e:
         logger.error(f"❌ Erreur traitement job {job_name}: {e}")
         import traceback
-        logger.error(traceback.format_exc())
+        error_traceback = traceback.format_exc()
+        logger.error(error_traceback)
 
-        # Renommer en erreur
+        # Marquer le job comme failed avec la raison de l'erreur
+        error_reason = f"{type(e).__name__}: {str(e)}"
+        if job_data:
+            update_job_status(drive_manager, job_id, job_data, 'failed', error_reason)
+
+        # Déplacer vers failed_jobs si le dossier existe
         try:
-            error_name = job_name.replace('highlight_job_', 'highlight_error_')
-            drive_manager.service.files().update(
-                fileId=job_id,
-                body={'name': error_name},
-                supportsAllDrives=True
-            ).execute()
-            logger.info(f"⚠️  Job renommé en erreur: {error_name}")
-        except Exception as rename_error:
-            logger.warning(f"⚠️  Impossible de renommer le job: {rename_error}")
+            failed_folder = config['drive_folders'].get('failed_jobs')
+            if failed_folder:
+                failed_name = job_name.replace('highlight_job_', 'failed_')
+                drive_manager.service.files().update(
+                    fileId=job_id,
+                    addParents=failed_folder,
+                    removeParents=config['drive_folders']['queue_highlights'],
+                    body={'name': failed_name},
+                    supportsAllDrives=True
+                ).execute()
+                logger.info(f"⚠️  Job déplacé vers failed_jobs: {failed_name}")
+            else:
+                # Fallback: renommer en erreur dans la queue
+                error_name = job_name.replace('highlight_job_', 'highlight_error_')
+                drive_manager.service.files().update(
+                    fileId=job_id,
+                    body={'name': error_name},
+                    supportsAllDrives=True
+                ).execute()
+                logger.info(f"⚠️  Job renommé en erreur: {error_name}")
+        except Exception as move_error:
+            logger.warning(f"⚠️  Impossible de déplacer le job failed: {move_error}")
 
 
 if __name__ == '__main__':
