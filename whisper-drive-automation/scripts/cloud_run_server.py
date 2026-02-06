@@ -379,9 +379,9 @@ def process_files():
                             )
 
                             # Save using output_generator
-                            output_result = output_generator.create_output_files(
-                                transcription_result,
+                            output_result = output_generator.generate_all_outputs(
                                 base_filename,
+                                transcription_result,
                                 paragraphs
                             )
 
