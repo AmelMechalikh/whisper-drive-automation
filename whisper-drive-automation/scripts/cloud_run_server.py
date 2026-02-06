@@ -363,15 +363,23 @@ def process_files():
                             # Save transcription results to Drive (same format as VM worker)
                             logger.info(f"💾 Sauvegarde résultats: {file_name}")
 
-                            # Generate outputs using orchestrator's output_generator
+                            # Generate outputs using OutputGenerator
                             from whisper_transcriber import WhisperTranscriber
+                            from output_generator import OutputGenerator
+
                             temp_transcriber = WhisperTranscriber(backend=backend)
                             paragraphs = temp_transcriber.group_segments_to_paragraphs(
                                 transcription_result.get('segments', [])
                             )
 
+                            # Create OutputGenerator instance (orchestrator is DriveOrchestrator, not Processor)
+                            output_generator = OutputGenerator(
+                                drive_manager=orchestrator.drive_manager,
+                                output_folder_id=output_folder_id
+                            )
+
                             # Save using output_generator
-                            output_result = orchestrator.output_generator.create_output_files(
+                            output_result = output_generator.create_output_files(
                                 transcription_result,
                                 base_filename,
                                 paragraphs
