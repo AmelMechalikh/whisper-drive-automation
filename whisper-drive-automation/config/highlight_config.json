@@ -15,5 +15,28 @@
     "temp_dir": "./temp_highlights",
     "extraction_method": "inline_markers",
     "add_subtitles": true
+  },
+  "transcription_backend": {
+    "provider": "gpu_runpod",
+    "cpu_local": {
+      "device": "cpu",
+      "model": "base",
+      "compute_type": "int8"
+    },
+    "gpu_runpod": {
+      "device": "cuda",
+      "model": "turbo",
+      "api_endpoint": "https://api.runpod.ai/v2/52nwp917j565t3",
+      "api_key_env": "RUNPOD_API_KEY",
+      "timeout_seconds": 600,
+      "max_retries": 3
+    }
+  },
+  "gcs_temp_bucket": "artificial-intelligence-cmk-whisper-temp-audio",
+  "vm_workers": {
+    "highlights_vm_enabled": true,
+    "subtitles_vm_enabled": false,
+    "auto_start_subtitles_vm": false,
+    "transcription_vm_enabled": false
   }
 }

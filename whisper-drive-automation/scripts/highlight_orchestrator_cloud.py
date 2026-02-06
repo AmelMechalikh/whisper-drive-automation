@@ -869,10 +869,33 @@ class HighlightsProcessor:
                 logger.warning(f"Erreur nettoyage {file}: {e}")
                 logger.warning(f"Erreur nettoyage {file}: {e}")
 
-    def start_vm_if_needed(self):
-        """Démarre la VM highlights si elle est arrêtée"""
+    def start_vm_if_needed(self, vm_type='highlights'):
+        """
+        Démarre la VM si elle est arrêtée et si elle est activée dans la config
+
+        Args:
+            vm_type: Type de VM à démarrer ('highlights' ou 'subtitles')
+        """
         try:
-            logger.info(f"🔍 Vérification état de la VM {VM_NAME}...")
+            # Vérifier si la VM est activée dans la config
+            vm_workers_config = self.config.get('vm_workers', {})
+
+            if vm_type == 'subtitles':
+                vm_enabled = vm_workers_config.get('subtitles_vm_enabled', True)
+                auto_start = vm_workers_config.get('auto_start_subtitles_vm', True)
+
+                if not vm_enabled or not auto_start:
+                    logger.info(f"❌ Subtitles VM disabled in config (enabled={vm_enabled}, auto_start={auto_start})")
+                    logger.info(f"💡 Subtitles jobs will be processed by RunPod backend instead")
+                    return
+            elif vm_type == 'highlights':
+                vm_enabled = vm_workers_config.get('highlights_vm_enabled', True)
+
+                if not vm_enabled:
+                    logger.info(f"❌ Highlights VM disabled in config")
+                    return
+
+            logger.info(f"🔍 Vérification état de la VM {VM_NAME} (type: {vm_type})...")
 
             # Créer un client Compute Engine
             instances_client = compute_v1.InstancesClient()
@@ -997,14 +1020,14 @@ class HighlightsProcessor:
 
             if pending_count > 0:
                 logger.info(f"📥 {pending_count} job(s) highlights en attente (status: pending) - démarrage de la VM...")
-                self.start_vm_if_needed()
+                self.start_vm_if_needed(vm_type='highlights')
             else:
                 logger.info(f"✅ Aucun job highlights en attente")
 
             # Démarrer la VM si des jobs de sous-titres ont été créés
             if result['subtitles_requests_processed'] > 0:
-                logger.info(f"📺 {result['subtitles_requests_processed']} job(s) sous-titres créé(s) - démarrage de la VM...")
-                self.start_vm_if_needed()
+                logger.info(f"📺 {result['subtitles_requests_processed']} job(s) sous-titres créé(s) - vérification backend...")
+                self.start_vm_if_needed(vm_type='subtitles')
 
             if result['errors']:
                 result['status'] = 'partial_success'

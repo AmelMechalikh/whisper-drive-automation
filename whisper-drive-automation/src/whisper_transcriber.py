@@ -2,7 +2,6 @@
 Module de transcription Whisper pour l'automation
 Gestion de la transcription audio avec timestamps
 """
-import whisper
 import logging
 import subprocess
 import tempfile
@@ -12,30 +11,38 @@ import json
 
 class WhisperTranscriber:
     """Gestionnaire de transcription Whisper"""
-    
-    def __init__(self, model='large', device='cpu', language='fr'):
+
+    def __init__(self, model='large', device='cpu', language='fr', backend=None):
         """
         Initialise le transcripteur Whisper
-        
+
         Args:
-            model: Modèle Whisper à utiliser (base, small, large)
-            device: Device de calcul (cpu, cuda)
+            model: Modèle Whisper à utiliser (base, small, large) - ignoré si backend fourni
+            device: Device de calcul (cpu, cuda) - ignoré si backend fourni
             language: Langue de transcription (auto-détection si None)
+            backend: Backend de transcription optionnel (CPULocalBackend ou RunPodBackend)
         """
         self.model_name = model
         self.device = device
         self.language = language
+        self.backend = backend
         self.model = None
         self.logger = logging.getLogger(__name__)
-        self._load_model()
-    
+
+        # Si pas de backend, charger le modèle Whisper classique (rétro-compatibilité)
+        if self.backend is None:
+            self._load_model()
+        else:
+            self.logger.info(f"🤖 Utilisation du backend: {self.backend.get_backend_name()}")
+
     def _load_model(self):
-        """Charge le modèle Whisper"""
+        """Charge le modèle Whisper (mode classique sans backend)"""
         try:
+            import whisper
             self.logger.info(f"🤖 Chargement du modèle Whisper: {self.model_name}")
             self.model = whisper.load_model(self.model_name, device=self.device)
             self.logger.info("✅ Modèle Whisper chargé")
-            
+
         except Exception as e:
             self.logger.error(f"❌ Erreur chargement modèle Whisper: {e}")
             raise
@@ -43,19 +50,19 @@ class WhisperTranscriber:
     def transcribe_audio(self, audio_path, test_mode=False, test_duration=600):
         """
         Transcrit un fichier audio avec Whisper
-        
+
         Args:
             audio_path: Chemin vers le fichier audio
             test_mode: Mode test (limitation durée)
             test_duration: Durée en secondes pour le mode test
-        
+
         Returns:
             dict: Résultat de transcription Whisper
         """
         try:
             file_name = Path(audio_path).name
             self.logger.info(f"🎵 Début transcription: {file_name}")
-            
+
             # Mode test avec limitation durée
             audio_to_transcribe = audio_path
             if test_mode:
@@ -63,38 +70,48 @@ class WhisperTranscriber:
                 audio_to_transcribe = self._limit_audio_duration(
                     audio_path, test_duration
                 )
-            
-            # Options de transcription
-            transcribe_options = {
-                'word_timestamps': True,
-                'verbose': False
-            }
-            
-            if self.language:
-                transcribe_options['language'] = self.language
-            
-            # Ajout du vocabulaire technique spécialisé
-            if hasattr(self, 'vocabulary') and self.vocabulary:
-                # Créer un prompt initial avec les mots techniques
-                vocabulary_prompt = "Mots techniques: " + ", ".join(self.vocabulary)
-                transcribe_options['initial_prompt'] = vocabulary_prompt
-                self.logger.info(f"📝 Vocabulaire technique ajouté: {len(self.vocabulary)} termes")
-            
-            # Transcription
-            result = self.model.transcribe(audio_to_transcribe, **transcribe_options)
-            
+
+            # Si backend disponible, l'utiliser
+            if self.backend is not None:
+                self.logger.info(f"🔧 Transcription via backend: {self.backend.get_backend_name()}")
+                result = self.backend.transcribe_audio(
+                    audio_path=audio_to_transcribe,
+                    language=self.language or 'fr',
+                    word_timestamps=True
+                )
+            else:
+                # Mode classique avec modèle Whisper local
+                # Options de transcription
+                transcribe_options = {
+                    'word_timestamps': True,
+                    'verbose': False
+                }
+
+                if self.language:
+                    transcribe_options['language'] = self.language
+
+                # Ajout du vocabulaire technique spécialisé
+                if hasattr(self, 'vocabulary') and self.vocabulary:
+                    # Créer un prompt initial avec les mots techniques
+                    vocabulary_prompt = "Mots techniques: " + ", ".join(self.vocabulary)
+                    transcribe_options['initial_prompt'] = vocabulary_prompt
+                    self.logger.info(f"📝 Vocabulaire technique ajouté: {len(self.vocabulary)} termes")
+
+                # Transcription
+                result = self.model.transcribe(audio_to_transcribe, **transcribe_options)
+
             # Nettoyage fichier temporaire si mode test
             if test_mode and audio_to_transcribe != audio_path:
                 try:
                     os.remove(audio_to_transcribe)
                 except:
                     pass
-            
+
             duration_info = f" ({test_duration//60} premières minutes)" if test_mode else ""
             self.logger.info(f"✅ Transcription terminée: {file_name}{duration_info}")
-            
+
             return result
-            
+
         except Exception as e:
             self.logger.error(f"❌ Erreur transcription {file_name}: {e}")
             return None

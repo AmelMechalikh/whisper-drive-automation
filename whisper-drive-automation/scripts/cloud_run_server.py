@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from pathlib import Path
 import sys
+import tempfile
 
 # Configuration du logging dès le début
 logging.basicConfig(
@@ -214,6 +215,38 @@ def process_files():
         VM_NAME = 'whisper-cpu-worker'
         PROJECT_ID = 'artificial-intelligence-cmk'
 
+        # Load transcription backend from highlight_config.json
+        backend = None
+        use_runpod = False
+        try:
+            config_path = Path(__file__).parent.parent / 'config' / 'highlight_config.json'
+            logger.info(f"🔍 Checking config at: {config_path}")
+            logger.info(f"🔍 Config exists: {config_path.exists()}")
+
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    highlight_config = json.load(f)
+                logger.info(f"✅ Config loaded successfully")
+
+                backend_provider = highlight_config.get('transcription_backend', {}).get('provider', 'cpu_local')
+                logger.info(f"🔍 Backend provider from config: {backend_provider}")
+                use_runpod = (backend_provider == 'gpu_runpod')
+                logger.info(f"🔍 use_runpod = {use_runpod}")
+
+                if use_runpod:
+                    logger.info("🚀 Attempting to load RunPod backend...")
+                    from transcription_backends import get_transcription_backend
+                    backend = get_transcription_backend(highlight_config)
+                    logger.info(f"🚀 Using transcription backend: {backend.get_backend_name()}")
+                else:
+                    logger.info("📍 RunPod not enabled, using VM fallback")
+            else:
+                logger.warning(f"⚠️ Config file not found at: {config_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not load transcription backend: {e}. Using VM fallback.")
+            import traceback
+            logger.warning(traceback.format_exc())
+
         # Initialiser l'orchestrateur
         orchestrator = get_orchestrator()
         if not orchestrator:
@@ -263,11 +296,17 @@ def process_files():
                 continue
 
             size_mb = int(file_info.get('size', 0)) / (1024 * 1024)
-            logger.info(f"📊 {file_name}: {size_mb:.1f} MB → envoi VM")
+
+            if use_runpod:
+                logger.info(f"📊 {file_name}: {size_mb:.1f} MB → transcription RunPod")
+            else:
+                logger.info(f"📊 {file_name}: {size_mb:.1f} MB → envoi VM")
+
             files_to_vm.append(file_info)
 
         results = {
             'sent_to_vm': [],
+            'transcribed_runpod': [],
             'skipped': [],
             'errors': []
         }
@@ -288,145 +327,214 @@ def process_files():
         
         # Envoyer tous les fichiers à la VM via fichiers de commande dans Drive
         if files_to_vm:
-            logger.info(f"🖥️  {len(files_to_vm)} fichiers: création de jobs pour VM")
+            if use_runpod:
+                logger.info(f"🚀 {len(files_to_vm)} fichiers: transcription directe avec RunPod")
 
-            try:
-                # Démarrer la VM si elle est arrêtée - Utiliser l'API Compute Engine
+                # Transcription directe avec RunPod (pas de VM, pas de jobs)
+                for file_info in files_to_vm:
+                    try:
+                        file_id = file_info['id']
+                        file_name = file_info['name']
+
+                        # Vérifier si déjà transcrit
+                        base_filename = Path(file_name).stem
+                        output_folder_id = orchestrator.config.DRIVE_FOLDERS['output']
+
+                        if orchestrator.drive_manager.transcription_exists(base_filename, output_folder_id):
+                            logger.info(f"⏭️  Fichier déjà transcrit, skip: {file_name}")
+                            results['skipped'].append(file_name)
+                            continue
+
+                        # Download audio from Drive
+                        logger.info(f"📥 Téléchargement fichier: {file_name}")
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file_name).suffix) as temp_audio:
+                            audio_path = temp_audio.name
+                            orchestrator.drive_manager.download_file(file_id, file_name, audio_path)
+
+                        # Transcribe with RunPod backend
+                        logger.info(f"🎤 Transcription RunPod: {file_name}")
+                        transcription_result = backend.transcribe_audio(
+                            audio_path=audio_path,
+                            language='fr',
+                            word_timestamps=True
+                        )
+
+                        if transcription_result:
+                            # Save transcription results to Drive (same format as VM worker)
+                            logger.info(f"💾 Sauvegarde résultats: {file_name}")
+
+                            # Generate outputs using orchestrator's output_generator
+                            from whisper_transcriber import WhisperTranscriber
+                            temp_transcriber = WhisperTranscriber(backend=backend)
+                            paragraphs = temp_transcriber.group_segments_to_paragraphs(
+                                transcription_result.get('segments', [])
+                            )
+
+                            # Save using output_generator
+                            output_result = orchestrator.output_generator.create_output_files(
+                                transcription_result,
+                                base_filename,
+                                paragraphs
+                            )
+
+                            if output_result:
+                                logger.info(f"✅ Transcription complète: {file_name}")
+                                results['transcribed_runpod'].append(file_name)
+                            else:
+                                raise Exception("Failed to save transcription results")
+                        else:
+                            raise Exception("RunPod transcription returned no result")
+
+                        # Cleanup temp file
+                        os.remove(audio_path)
+
+                    except Exception as e:
+                        logger.error(f"❌ Erreur transcription RunPod {file_name}: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        results['errors'].append({'file': file_name, 'error': str(e)})
+
+                logger.info(f"💡 {len(results['transcribed_runpod'])} fichiers transcrits avec RunPod")
+
+            else:
+                # Mode VM classique
+                logger.info(f"🖥️  {len(files_to_vm)} fichiers: création de jobs pour VM")
+
                 try:
-                    logger.info(f"🔍 Vérification état de la VM {VM_NAME}...")
+                    # Démarrer la VM si elle est arrêtée - Utiliser l'API Compute Engine
+                    try:
+                        logger.info(f"🔍 Vérification état de la VM {VM_NAME}...")
 
-                    # Créer un client Compute Engine
-                    instances_client = compute_v1.InstancesClient()
+                        # Créer un client Compute Engine
+                        instances_client = compute_v1.InstancesClient()
 
-                    # Récupérer l'état de la VM
-                    instance = instances_client.get(
-                        project=PROJECT_ID,
-                        zone=ZONE,
-                        instance=VM_NAME
-                    )
-
-                    vm_status = instance.status
-                    logger.info(f"📊 État VM: {vm_status}")
-
-                    if vm_status == 'TERMINATED':
-                        logger.info(f"🚀 Démarrage de la VM {VM_NAME}...")
-
-                        # Démarrer la VM avec l'API
-                        operation = instances_client.start(
+                        # Récupérer l'état de la VM
+                        instance = instances_client.get(
                             project=PROJECT_ID,
                             zone=ZONE,
                             instance=VM_NAME
                         )
 
-                        logger.info(f"✅ Commande de démarrage envoyée - Operation: {operation.name}")
-                        logger.info(f"💡 La VM démarrera et le worker s'auto-lancera. Auto-shutdown après 5 min d'inactivité.")
+                        vm_status = instance.status
+                        logger.info(f"📊 État VM: {vm_status}")
 
-                    elif vm_status == 'RUNNING':
-                        logger.info(f"✅ VM {VM_NAME} déjà en cours d'exécution")
-                    else:
-                        logger.warning(f"⚠️  État VM inattendu: {vm_status}")
+                        if vm_status == 'TERMINATED':
+                            logger.info(f"🚀 Démarrage de la VM {VM_NAME}...")
 
-                except Exception as vm_error:
-                    logger.warning(f"⚠️  Erreur gestion VM: {vm_error}")
-                    import traceback
-                    logger.warning(traceback.format_exc())
-                    # Continue quand même pour créer les jobs
-                
-                # Créer un fichier de commande pour chaque fichier
-                
-                for file_info in files_to_vm:
-                    try:
-                        file_id = file_info['id']
-                        file_name = file_info['name']
-                        
-                        # Vérifier si déjà transcrit (éviter création job inutile)
-                        from pathlib import Path
-                        base_filename = Path(file_name).stem
-                        output_folder_id = orchestrator.config.DRIVE_FOLDERS['output']
-                        
-                        if orchestrator.drive_manager.transcription_exists(base_filename, output_folder_id):
-                            logger.info(f"⏭️  Fichier déjà transcrit, skip création job: {file_name}")
-                            results['skipped'].append(file_name)
-                            continue
-                        
-                        # Vérifier si un job existe déjà pour ce fichier (normal OU erreur)
-                        # On cherche job_{file_id}_ OU error_{file_id}_
-                        existing_job_query = f"'{queue_folder}' in parents and (name contains 'job_{file_id}_' or name contains 'error_{file_id}_') and trashed=false"
-                        existing_jobs_result = drive_service.files().list(
-                            q=existing_job_query,
-                            fields="files(id, name)",
-                            supportsAllDrives=True,
-                            includeItemsFromAllDrives=True
-                        ).execute()
-                        
-                        existing_jobs = existing_jobs_result.get('files', [])
-                        
-                        # Si un job existe (même en erreur), on le supprime pour créer un nouveau job propre
-                        if existing_jobs:
-                            for job in existing_jobs:
-                                job_name = job['name']
-                                is_error = job_name.startswith('error_')
-                                logger.info(f"🗑️  Suppression ancien job {'EN ERREUR' if is_error else ''}: {job_name}")
-                                try:
-                                    drive_service.files().delete(
-                                        fileId=job['id'],
-                                        supportsAllDrives=True
-                                    ).execute()
-                                    logger.info(f"✅ Job supprimé: {job_name}")
-                                except Exception as del_error:
-                                    logger.warning(f"⚠️  Impossible de supprimer {job_name}: {del_error}")
-                        
-                        logger.info(f"📤 Création job VM: {file_name} (ID: {file_id})")
+                            # Démarrer la VM avec l'API
+                            operation = instances_client.start(
+                                project=PROJECT_ID,
+                                zone=ZONE,
+                                instance=VM_NAME
+                            )
 
-                        # Créer un fichier JSON de commande
-                        job_data = {
-                            'file_id': file_id,
-                            'file_name': file_name,
-                            'timestamp': datetime.now().isoformat(),
-                            'status': 'pending'
-                        }
-                        
-                        # Créer un fichier temporaire local avec le job
-                        import tempfile
-                        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
-                            json.dump(job_data, temp_file, indent=2)
-                            temp_path = temp_file.name
-                        
-                        # Upload vers Drive dans le dossier queue
-                        job_filename = f"job_{file_id}_{int(time.time())}.json"
-                        uploaded = orchestrator.drive_manager.upload_file(
-                            temp_path,
-                            job_filename,
-                            queue_folder
-                        )
-                        
-                        # Nettoyer le fichier temporaire
-                        os.remove(temp_path)
-                        
-                        if uploaded:
-                            logger.info(f"✅ Job créé pour: {file_name} → {job_filename}")
-                            results['sent_to_vm'].append(file_name)
+                            logger.info(f"✅ Commande de démarrage envoyée - Operation: {operation.name}")
+                            logger.info(f"💡 La VM démarrera et le worker s'auto-lancera. Auto-shutdown après 5 min d'inactivité.")
+
+                        elif vm_status == 'RUNNING':
+                            logger.info(f"✅ VM {VM_NAME} déjà en cours d'exécution")
                         else:
-                            error_msg = "Échec upload job vers Drive"
-                            logger.error(f"❌ {error_msg}")
-                            results['errors'].append({
-                                'file': file_name,
-                                'error': error_msg
-                            })
+                            logger.warning(f"⚠️  État VM inattendu: {vm_status}")
 
-                    except Exception as e:
-                        logger.error(f"❌ Erreur création job {file_info['name']}: {e}")
-                        results['errors'].append({'file': file_info['name'], 'error': str(e)})
+                    except Exception as vm_error:
+                        logger.warning(f"⚠️  Erreur gestion VM: {vm_error}")
+                        import traceback
+                        logger.warning(traceback.format_exc())
+                        # Continue quand même pour créer les jobs
                 
-                # Note: La VM doit être configurée pour vérifier périodiquement le dossier queue
-                logger.info(f"💡 {len(results['sent_to_vm'])} jobs créés. La VM les traitera automatiquement.")
+                    # Créer un fichier de commande pour chaque fichier
+                
+                    for file_info in files_to_vm:
+                        try:
+                            file_id = file_info['id']
+                            file_name = file_info['name']
+                        
+                            # Vérifier si déjà transcrit (éviter création job inutile)
+                            base_filename = Path(file_name).stem
+                            output_folder_id = orchestrator.config.DRIVE_FOLDERS['output']
+                        
+                            if orchestrator.drive_manager.transcription_exists(base_filename, output_folder_id):
+                                logger.info(f"⏭️  Fichier déjà transcrit, skip création job: {file_name}")
+                                results['skipped'].append(file_name)
+                                continue
+                        
+                            # Vérifier si un job existe déjà pour ce fichier (normal OU erreur)
+                            # On cherche job_{file_id}_ OU error_{file_id}_
+                            existing_job_query = f"'{queue_folder}' in parents and (name contains 'job_{file_id}_' or name contains 'error_{file_id}_') and trashed=false"
+                            existing_jobs_result = drive_service.files().list(
+                                q=existing_job_query,
+                                fields="files(id, name)",
+                                supportsAllDrives=True,
+                                includeItemsFromAllDrives=True
+                            ).execute()
+                        
+                            existing_jobs = existing_jobs_result.get('files', [])
+                        
+                            # Si un job existe (même en erreur), on le supprime pour créer un nouveau job propre
+                            if existing_jobs:
+                                for job in existing_jobs:
+                                    job_name = job['name']
+                                    is_error = job_name.startswith('error_')
+                                    logger.info(f"🗑️  Suppression ancien job {'EN ERREUR' if is_error else ''}: {job_name}")
+                                    try:
+                                        drive_service.files().delete(
+                                            fileId=job['id'],
+                                            supportsAllDrives=True
+                                        ).execute()
+                                        logger.info(f"✅ Job supprimé: {job_name}")
+                                    except Exception as del_error:
+                                        logger.warning(f"⚠️  Impossible de supprimer {job_name}: {del_error}")
+                        
+                            logger.info(f"📤 Création job VM: {file_name} (ID: {file_id})")
 
-            except Exception as e:
-                logger.error(f"❌ Erreur création jobs VM: {e}")
-                # Marquer tous les fichiers comme erreur
-                for file_info in files_to_vm:
-                    results['errors'].append({
-                        'file': file_info['name'],
+                            # Créer un fichier JSON de commande
+                            job_data = {
+                                'file_id': file_id,
+                                'file_name': file_name,
+                                'timestamp': datetime.now().isoformat(),
+                                'status': 'pending'
+                            }
+                        
+                            # Créer un fichier temporaire local avec le job
+                            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
+                                json.dump(job_data, temp_file, indent=2)
+                                temp_path = temp_file.name
+                        
+                            # Upload vers Drive dans le dossier queue
+                            job_filename = f"job_{file_id}_{int(time.time())}.json"
+                            uploaded = orchestrator.drive_manager.upload_file(
+                                temp_path,
+                                job_filename,
+                                queue_folder
+                            )
+                        
+                            # Nettoyer le fichier temporaire
+                            os.remove(temp_path)
+                        
+                            if uploaded:
+                                logger.info(f"✅ Job créé pour: {file_name} → {job_filename}")
+                                results['sent_to_vm'].append(file_name)
+                            else:
+                                error_msg = "Échec upload job vers Drive"
+                                logger.error(f"❌ {error_msg}")
+                                results['errors'].append({
+                                    'file': file_name,
+                                    'error': error_msg
+                                })
+
+                        except Exception as e:
+                            logger.error(f"❌ Erreur création job {file_info['name']}: {e}")
+                            results['errors'].append({'file': file_info['name'], 'error': str(e)})
+                
+                    # Note: La VM doit être configurée pour vérifier périodiquement le dossier queue
+                    logger.info(f"💡 {len(results['sent_to_vm'])} jobs créés. La VM les traitera automatiquement.")
+
+                except Exception as e:
+                    logger.error(f"❌ Erreur création jobs VM: {e}")
+                    # Marquer tous les fichiers comme erreur
+                    for file_info in files_to_vm:
+                        results['errors'].append({
+                            'file': file_info['name'],
                         'error': f"Échec création job: {str(e)}"
                     })
         

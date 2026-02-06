@@ -89,59 +89,45 @@ def extract_audio_from_video(video_path: str, output_audio: str) -> bool:
         return False
 
 
-def align_segments_with_whisperx(audio_path: str, segments: list) -> list:
+def align_segments_with_backend(audio_path: str, segments: list, backend) -> list:
     """
-    Aligne chaque segment du SRT mot-par-mot avec WhisperX
+    Aligne chaque segment du SRT mot-par-mot en utilisant le backend configuré
     Retourne une liste de tous les mots avec timestamps
     """
     try:
-        import whisperx
-    except ImportError as e:
-        logger.error(f"❌ whisperx non installé: {e}")
-        return None
-
-    device = "cpu"
-
-    # Charger l'audio
-    audio = whisperx.load_audio(audio_path)
-
-    # Convertir segments SRT au format WhisperX
-    whisperx_segments = []
-    for seg in segments:
-        whisperx_segments.append({
-            "start": seg['start'],
-            "end": seg['end'],
-            "text": seg['text']
-        })
-
-    # Charger le modèle d'alignement
-    model_a, metadata = whisperx.load_align_model(
-        language_code="fr",
-        device=device
-    )
-
-    # Aligner
-    result_aligned = whisperx.align(
-        whisperx_segments,
-        model_a,
-        metadata,
-        audio,
-        device,
-        return_char_alignments=False
-    )
-
-    # Extraire les mots
-    all_words = []
-    for segment in result_aligned.get("segments", []):
-        for word_info in segment.get("words", []):
-            all_words.append({
-                "word": word_info["word"],
-                "start": word_info["start"],
-                "end": word_info["end"]
+        # Convertir segments SRT au format attendu par le backend
+        backend_segments = []
+        for seg in segments:
+            backend_segments.append({
+                "start": seg['start'],
+                "end": seg['end'],
+                "text": seg['text']
             })
 
-    del model_a
-    return all_words
+        # Utiliser le backend pour aligner
+        aligned_segments = backend.align_segments(
+            audio_path=audio_path,
+            segments=backend_segments,
+            language="fr"
+        )
+
+        # Extraire les mots de tous les segments alignés
+        all_words = []
+        for segment in aligned_segments:
+            for word_info in segment.get("words", []):
+                all_words.append({
+                    "word": word_info["word"],
+                    "start": word_info["start"],
+                    "end": word_info["end"]
+                })
+
+        return all_words
+
+    except Exception as e:
+        logger.error(f"❌ Erreur lors de l'alignement: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
 
 
 def generate_ass_subtitle(words: list, output_path: str):
@@ -162,16 +148,23 @@ Style: Instagram,Arial,80,&H00000000,&H000000FF,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,1
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
-    # Chunks de 3 mots
-    chunk_size = 3
+    # Chunks de 5 mots (plus lisible que 3)
+    chunk_size = 5
+    sync_offset = 0.4  # Délai de synchronisation en secondes (ajusté pour compenserle décalage)
+    min_duration = 0.8  # Durée minimale d'affichage en secondes
     chunks = []
 
     for i in range(0, len(words), chunk_size):
         chunk_words = words[i:i + chunk_size]
         if chunk_words:
             text = " ".join([w["word"] for w in chunk_words])
-            start_time = chunk_words[0]["start"]
-            end_time = chunk_words[-1]["end"]
+            start_time = chunk_words[0]["start"] + sync_offset
+            end_time = chunk_words[-1]["end"] + sync_offset
+
+            # Assurer une durée minimale
+            if (end_time - start_time) < min_duration:
+                end_time = start_time + min_duration
+
             chunks.append({
                 "text": text,
                 "start": start_time,
@@ -234,13 +227,18 @@ def main():
 
     try:
         from drive_manager import DriveManager
+        from transcription_backends import get_transcription_backend
 
         # Charger la config
         config_file = current_dir / 'config' / 'highlight_config.json'
         with open(config_file, 'r') as f:
             config = json.load(f)
 
-        logger.info("🔧 Initialisation...")
+        # Initialiser le backend de transcription
+        backend = get_transcription_backend(config)
+        logger.info(f"🔧 Backend de transcription: {backend.get_backend_name()}")
+
+        logger.info("🔧 Initialisation Drive Manager...")
         credentials_path = str(current_dir / 'config' / 'credentials.json')
         drive_manager = DriveManager(credentials_path=credentials_path)
 
@@ -290,7 +288,8 @@ def main():
                             drive_manager,
                             job_file,
                             config,
-                            temp_dir
+                            temp_dir,
+                            backend
                         )
                         consecutive_empty_checks = 0
 
@@ -353,13 +352,14 @@ def mark_doc_as_subtitles_done(drive_manager, doc_id):
         logger.warning(f"⚠️ Erreur lors de l'ajout de la balise SUBTITLES_DONE: {e}")
 
 
-def process_subtitles_job(drive_manager, job_file, config, temp_dir):
-    """Traite un job de sous-titrage"""
+def process_subtitles_job(drive_manager, job_file, config, temp_dir, backend):
+    """Traite un job de sous-titrage avec le backend configuré"""
     job_name = job_file['name']
     job_id = job_file['id']
 
     logger.info("=" * 60)
     logger.info(f"🎯 Traitement du job: {job_name}")
+    logger.info(f"🔧 Backend: {backend.get_backend_name()}")
 
     try:
         # Télécharger le fichier job
@@ -447,9 +447,9 @@ def process_subtitles_job(drive_manager, job_file, config, temp_dir):
             segments = parse_srt(str(srt_path))
             logger.info(f"   📝 {len(segments)} segments SRT")
 
-            # Aligner mot-par-mot
-            logger.info(f"   🎯 Alignement mot-par-mot...")
-            words = align_segments_with_whisperx(str(audio_path), segments)
+            # Aligner mot-par-mot avec le backend
+            logger.info(f"   🎯 Alignement mot-par-mot avec {backend.get_backend_name()}...")
+            words = align_segments_with_backend(str(audio_path), segments, backend)
 
             if not words:
                 logger.warning(f"⚠️ Échec alignement - {video_name} ignoré")

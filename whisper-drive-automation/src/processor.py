@@ -103,15 +103,31 @@ class WhisperDriveProcessor:
         try:
             # Google Drive
             self.drive_manager = DriveManager(self.config.CREDENTIALS_PATH)
-            
+
+            # Load transcription backend from highlight_config.json if available
+            backend = None
+            try:
+                config_path = Path(__file__).parent.parent / 'config' / 'highlight_config.json'
+                if config_path.exists():
+                    with open(config_path, 'r') as f:
+                        highlight_config = json.load(f)
+
+                    # Initialize backend
+                    from transcription_backends import get_transcription_backend
+                    backend = get_transcription_backend(highlight_config)
+                    self.logger.info(f"🔧 Using transcription backend: {backend.get_backend_name()}")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Could not load transcription backend: {e}. Using classic Whisper.")
+
             # Whisper Transcriber
             whisper_config = self.config.WHISPER_CONFIG
             self.transcriber = WhisperTranscriber(
                 model=whisper_config['model'],
                 device=whisper_config['device'],
-                language=whisper_config.get('language')
+                language=whisper_config.get('language'),
+                backend=backend
             )
-            
+
             # Ajouter le vocabulaire technique si disponible
             if 'vocabulary' in whisper_config:
                 self.transcriber.vocabulary = whisper_config['vocabulary']
