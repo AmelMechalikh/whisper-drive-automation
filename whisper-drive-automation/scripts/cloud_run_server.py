@@ -345,11 +345,42 @@ def process_files():
                             results['skipped'].append(file_name)
                             continue
 
-                        # Download audio from Drive
+                        # Download file from Drive
                         logger.info(f"📥 Téléchargement fichier: {file_name}")
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file_name).suffix) as temp_audio:
-                            audio_path = temp_audio.name
-                            orchestrator.drive_manager.download_file(file_id, file_name, audio_path)
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file_name).suffix) as temp_file:
+                            downloaded_path = temp_file.name
+                            orchestrator.drive_manager.download_file(file_id, file_name, downloaded_path)
+
+                        # Extract audio if video file
+                        file_ext = Path(file_name).suffix.lower()
+                        video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv']
+
+                        if file_ext in video_extensions:
+                            logger.info(f"🎬 Extraction audio depuis vidéo: {file_name}")
+                            audio_path = downloaded_path.replace(file_ext, '.mp3')
+
+                            # Extract audio with ffmpeg
+                            import subprocess
+                            result = subprocess.run([
+                                'ffmpeg', '-i', downloaded_path,
+                                '-vn',  # No video
+                                '-acodec', 'libmp3lame',
+                                '-ab', '128k',  # Bitrate
+                                '-ar', '16000',  # Sample rate for Whisper
+                                '-y',  # Overwrite
+                                audio_path
+                            ], capture_output=True, text=True)
+
+                            if result.returncode != 0:
+                                logger.error(f"❌ Erreur extraction audio: {result.stderr}")
+                                raise Exception(f"Failed to extract audio: {result.stderr}")
+
+                            # Remove original video file
+                            os.remove(downloaded_path)
+                            logger.info(f"✅ Audio extrait: {Path(audio_path).stat().st_size / 1024 / 1024:.1f} MB")
+                        else:
+                            # Already an audio file
+                            audio_path = downloaded_path
 
                         # Transcribe with RunPod backend
                         logger.info(f"🎤 Transcription RunPod: {file_name}")
