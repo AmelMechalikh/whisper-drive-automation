@@ -173,7 +173,7 @@ class RunPodBackend(TranscriptionBackend):
             raise ValueError(f"RunPod API key not found in environment variable: {api_key_env}")
 
         self.model = runpod_config.get('model', 'large-v3-turbo')
-        self.timeout = runpod_config.get('timeout_seconds', 600)
+        self.timeout = runpod_config.get('timeout_seconds', 1800)  # 30 minutes for long audio files
         self.max_retries = runpod_config.get('max_retries', 3)
 
         logger.info(f"[RunPod] Initialized RunPod backend with model={self.model}, timeout={self.timeout}s")
