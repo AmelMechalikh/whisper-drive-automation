@@ -92,13 +92,13 @@ class RunPodClient:
         # Poll for results
         return self._poll_job_status(job_id)
 
-    def _poll_job_status(self, job_id: str, timeout: int = 600, poll_interval: int = 5) -> Dict:
+    def _poll_job_status(self, job_id: str, timeout: int = 1800, poll_interval: int = 5) -> Dict:
         """
         Poll job status until completion.
 
         Args:
             job_id: RunPod job ID
-            timeout: Maximum time to wait in seconds (default: 600)
+            timeout: Maximum time to wait in seconds (default: 1800 = 30 min)
             poll_interval: Time between status checks in seconds (default: 5)
 
         Returns:
