@@ -433,9 +433,14 @@ def process_files():
                                     # Get duration and size from ffprobe
                                     probe_lines = probe_result.stdout.strip().split('\n')
                                     if len(probe_lines) >= 2:
-                                        duration = float(probe_lines[0])
-                                        size_bytes = int(probe_lines[1])
-                                        logger.info(f"✅ Audio valide: {size_bytes / 1024 / 1024:.1f} MB, durée: {duration:.1f}s")
+                                        # Handle 'N/A' values from ffprobe
+                                        try:
+                                            duration = float(probe_lines[0]) if probe_lines[0] != 'N/A' else 0
+                                            size_bytes = int(float(probe_lines[1])) if probe_lines[1] != 'N/A' else Path(audio_path).stat().st_size
+                                            logger.info(f"✅ Audio valide: {size_bytes / 1024 / 1024:.1f} MB, durée: {duration:.1f}s")
+                                        except (ValueError, IndexError):
+                                            # Fallback to file size if conversion fails
+                                            logger.info(f"✅ Audio extrait: {Path(audio_path).stat().st_size / 1024 / 1024:.1f} MB")
                                     else:
                                         logger.info(f"✅ Audio extrait: {Path(audio_path).stat().st_size / 1024 / 1024:.1f} MB")
 
