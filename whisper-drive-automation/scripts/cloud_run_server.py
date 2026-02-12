@@ -405,8 +405,8 @@ def process_files():
                                 # Close stdin to signal EOF to ffmpeg
                                 ffmpeg_process.stdin.close()
 
-                                # Wait for ffmpeg to finish
-                                returncode = ffmpeg_process.wait(timeout=600)
+                                # Wait for ffmpeg to finish (30 min timeout for large files)
+                                returncode = ffmpeg_process.wait(timeout=1800)
 
                                 # Read output
                                 stderr_output = ffmpeg_process.stderr.read().decode()
