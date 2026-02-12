@@ -28,7 +28,7 @@
       "model": "turbo",
       "api_endpoint": "https://api.runpod.ai/v2/52nwp917j565t3",
       "api_key_env": "RUNPOD_API_KEY",
-      "timeout_seconds": 600,
+      "timeout_seconds": 1800,
       "max_retries": 3
     }
   },

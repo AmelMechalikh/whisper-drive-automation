@@ -16,10 +16,11 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copie des fichiers de requirements
-COPY requirements.txt .
+# Utiliser requirements-runpod.txt (léger) au lieu de requirements.txt (torch/whisperx)
+COPY requirements-runpod.txt .
 
 # Installation des dépendances Python avec optimisations
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements-runpod.txt
 
 # Copie du code source
 COPY src/ src/

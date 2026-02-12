@@ -1,0 +1,65 @@
+steps:
+  # Build the Docker image for RunPod worker
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'Dockerfile.runpod-worker'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/runpod-transcription-worker:$SHORT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/runpod-transcription-worker:latest'
+      - '.'
+
+  # Push the Docker image to Google Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/runpod-transcription-worker:$SHORT_SHA'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/runpod-transcription-worker:latest'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'runpod-transcription-worker'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/runpod-transcription-worker:$SHORT_SHA'
+      - '--region'
+      - 'europe-west1'
+      - '--platform'
+      - 'managed'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '1'
+      - '--timeout'
+      - '3600'
+      - '--max-instances'
+      - '5'
+      - '--min-instances'
+      - '0'
+      - '--service-account'
+      - 'id-whisper-automation@artificial-intelligence-cmk.iam.gserviceaccount.com'
+      - '--no-allow-unauthenticated'
+      - '--set-env-vars'
+      - 'RUNPOD_API_KEY=${_RUNPOD_API_KEY}'
+
+images:
+  - 'gcr.io/$PROJECT_ID/runpod-transcription-worker:$SHORT_SHA'
+  - 'gcr.io/$PROJECT_ID/runpod-transcription-worker:latest'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  _RUNPOD_API_KEY: ''  # À définir lors du build avec --substitutions
+
+timeout: '1200s'

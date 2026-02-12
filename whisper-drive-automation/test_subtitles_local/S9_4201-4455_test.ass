@@ -1,0 +1,72 @@
+[Script Info]
+Title: Instagram Subtitles
+ScriptType: v4.00+
+WrapStyle: 0
+PlayResX: 1080
+PlayResY: 1920
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Instagram,Arial,80,&H00000000,&H000000FF,&H00FFFFFF,&H00FFFFFF,-1,0,0,0,100,100,0,0,3,8,0,2,10,10,180,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.40,0:00:04.14,Instagram,,0,0,0,,c 'est intéressant, j 'adore tous les passages des livres de Gueshela
+Dialogue: 0,0:00:04.14,0:00:06.52,Instagram,,0,0,0,,où ce qui'il met en valeur c 'est parfois oui
+Dialogue: 0,0:00:06.52,0:00:09.96,Instagram,,0,0,0,,c 'est des pratiquants super réalisés des qu 'ils étaient nés
+Dialogue: 0,0:00:09.96,0:00:15.57,Instagram,,0,0,0,,mais d 'autres des fois c 'est des personnes quand même un petit peu barré
+Dialogue: 0,0:00:15.57,0:00:18.45,Instagram,,0,0,0,,et c 'est intéressant parce que c 'est quelque part
+Dialogue: 0,0:00:18.45,0:00:20.63,Instagram,,0,0,0,,c 'est en eux qu 'on peut se retrouver le
+Dialogue: 0,0:00:20.63,0:00:24.29,Instagram,,0,0,0,,plus je pense parce qu 'au début ils sont pas
+Dialogue: 0,0:00:24.29,0:00:27.61,Instagram,,0,0,0,,super ils ont un esprit très indiscipliné
+Dialogue: 0,0:00:27.61,0:00:31.07,Instagram,,0,0,0,,mais avec le temps en fait ils deviennent des pratiquants
+Dialogue: 0,0:00:31.07,0:00:34.03,Instagram,,0,0,0,,en très profond et notamment ici un pratiquant qui s
+Dialogue: 0,0:00:34.03,0:00:37.47,Instagram,,0,0,0,,'appelait gêcher Ben Gungal certains d 'entre vous peut -être
+Dialogue: 0,0:00:37.47,0:00:42.65,Instagram,,0,0,0,,déjà entendu parler et justement c 'était une personne très
+Dialogue: 0,0:00:42.65,0:00:44.71,Instagram,,0,0,0,,très qui avait la réputation des très rues de très
+Dialogue: 0,0:00:44.71,0:00:50.75,Instagram,,0,0,0,,indisciplinées et il n 'est jamais vos prières
+Dialogue: 0,0:00:50.75,0:00:52.53,Instagram,,0,0,0,,et aux séances enfin aux enseignements
+Dialogue: 0,0:00:52.53,0:00:54.93,Instagram,,0,0,0,,et restez toute la journée dans sa chambre
+Dialogue: 0,0:00:54.93,0:00:57.10,Instagram,,0,0,0,,et les mois évidemment
+Dialogue: 0,0:00:57.10,0:00:58.61,Instagram,,0,0,0,,mais qu 'est ce que tu fais toute la toute
+Dialogue: 0,0:00:58.61,0:01:02.87,Instagram,,0,0,0,,la journée dans ta chambre à glandaix comme ça qu
+Dialogue: 0,0:01:02.87,0:01:03.83,Instagram,,0,0,0,,'est ce que tu fais
+Dialogue: 0,0:01:03.83,0:01:06.74,Instagram,,0,0,0,,et en fait il avait un sac de cahillou noir
+Dialogue: 0,0:01:06.74,0:01:08.30,Instagram,,0,0,0,,et un sac de cahillou blanc devant lui
+Dialogue: 0,0:01:08.30,0:01:11.52,Instagram,,0,0,0,,et à chaque fois qu 'il avait une un état
+Dialogue: 0,0:01:11.52,0:01:14.38,Instagram,,0,0,0,,d 'esprit perturbé il posait un cahillou noir devant lui
+Dialogue: 0,0:01:14.38,0:01:16.55,Instagram,,0,0,0,,et à chaque fois qu 'il avait un état d
+Dialogue: 0,0:01:16.55,0:01:18.80,Instagram,,0,0,0,,'esprit bénéci qui posait un cahillou blanc devant lui
+Dialogue: 0,0:01:18.80,0:01:21.18,Instagram,,0,0,0,,ou alors début il y avait beaucoup plus de cahillou
+Dialogue: 0,0:01:21.18,0:01:22.08,Instagram,,0,0,0,,noir que de cahillou blanc
+Dialogue: 0,0:01:22.08,0:01:25.49,Instagram,,0,0,0,,mais avec le temps parce qu 'il faisait que ça
+Dialogue: 0,0:01:25.49,0:01:29.83,Instagram,,0,0,0,,observait mon esprit et détruire mes perturbations mentales il y
+Dialogue: 0,0:01:29.83,0:01:31.10,Instagram,,0,0,0,,avait de plus en plus de cahillou blanc
+Dialogue: 0,0:01:31.10,0:01:33.58,Instagram,,0,0,0,,et finalement que des cahillou blanc
+Dialogue: 0,0:01:33.58,0:01:37.11,Instagram,,0,0,0,,et cette histoire elle est très belle à différents niveaux
+Dialogue: 0,0:01:37.11,0:01:38.71,Instagram,,0,0,0,,mais une des choses que je trouve le plus belle
+Dialogue: 0,0:01:38.71,0:01:41.94,Instagram,,0,0,0,,dans cette histoire c 'est que à la base il
+Dialogue: 0,0:01:41.94,0:01:44.46,Instagram,,0,0,0,,était comme nous guéché l 'anodi avant de devenir un
+Dialogue: 0,0:01:44.46,0:01:47.69,Instagram,,0,0,0,,pratiquant du Dharma guéché Ben Guglia l 'avait une réputation
+Dialogue: 0,0:01:47.69,0:01:52.75,Instagram,,0,0,0,,d 'être incontrôlable et insoumise votre définition je ne sais
+Dialogue: 0,0:01:52.75,0:01:54.19,Instagram,,0,0,0,,pas c 'est un peu comme ça que je me
+Dialogue: 0,0:01:54.19,0:01:55.90,Instagram,,0,0,0,,voyais avant incontrôlable et insoumise
+Dialogue: 0,0:01:55.90,0:01:58.40,Instagram,,0,0,0,,mais grâce à l 'observation minutieuse
+Dialogue: 0,0:01:58.40,0:02:01.04,Instagram,,0,0,0,,et continuelle de son esprit qu 'il jugait avec une
+Dialogue: 0,0:02:01.04,0:02:04.21,Instagram,,0,0,0,,honnête t 'es totale avec une honnête t 'es totale
+Dialogue: 0,0:02:04.21,0:02:07.41,Instagram,,0,0,0,,une totale authenticité sans mensonge dans le miroir du Dharma
+Dialogue: 0,0:02:07.41,0:02:09.26,Instagram,,0,0,0,,oui c 'est vrai c 'est vrai j 'ai vraiment
+Dialogue: 0,0:02:09.26,0:02:11.99,Instagram,,0,0,0,,un problème d 'attachement à cette personne oui c 'est
+Dialogue: 0,0:02:11.99,0:02:13.90,Instagram,,0,0,0,,vrai j 'ai un problème d 'attachement à cette substance
+Dialogue: 0,0:02:13.90,0:02:17.08,Instagram,,0,0,0,,et il avait complètement lâché prise avec le fait de
+Dialogue: 0,0:02:17.08,0:02:20.80,Instagram,,0,0,0,,prétend c 'est vrai j 'ai ce problème il devin
+Dialogue: 0,0:02:20.80,0:02:22.58,Instagram,,0,0,0,,progressivement un être très pur
+Dialogue: 0,0:02:22.58,0:02:25.80,Instagram,,0,0,0,,et très sain et bien il va gêcher la pause
+Dialogue: 0,0:02:25.80,0:02:28.40,Instagram,,0,0,0,,la question pourquoi nous pourrions nous pas faire de même
+Dialogue: 0,0:02:28.40,0:02:34.26,Instagram,,0,0,0,,pourquoi pas il y a des exemples bien pire il
+Dialogue: 0,0:02:34.26,0:02:44.99,Instagram,,0,0,0,,y a des continuous de leur esprit on puisse transformer
+Dialogue: 0,0:02:44.99,0:02:49.37,Instagram,,0,0,0,,complètement donc pour notre méditation je pense qu 'il serait
+Dialogue: 0,0:02:49.37,0:02:51.61,Instagram,,0,0,0,,bénéfique c 'est justement de commencer à essayer de s
+Dialogue: 0,0:02:51.61,0:02:54.37,Instagram,,0,0,0,,'identifier à ce potentiel de beauté
+Dialogue: 0,0:02:54.37,0:02:55.93,Instagram,,0,0,0,,et de puirter qu 'on porte en soi

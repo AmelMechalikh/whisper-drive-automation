@@ -82,6 +82,8 @@ class RunPodClient:
             raise
 
         result = response.json()
+        logger.info(f"RunPod job submission response: {result}")
+
         job_id = result.get('id')
 
         if not job_id:
@@ -110,6 +112,8 @@ class RunPodClient:
         """
         start_time = time.time()
         elapsed = 0
+        consecutive_errors = 0
+        max_retries = 3
 
         logger.info(f"Polling job {job_id} (timeout={timeout}s, interval={poll_interval}s)")
 
@@ -121,14 +125,24 @@ class RunPodClient:
                     timeout=30
                 )
                 response.raise_for_status()
+                consecutive_errors = 0  # Reset error counter on success
             except requests.exceptions.RequestException as e:
-                logger.warning(f"Error checking job status: {e}. Retrying...")
+                consecutive_errors += 1
+                logger.warning(f"Error checking job status ({consecutive_errors}/{max_retries}): {e}")
+
+                if consecutive_errors >= max_retries:
+                    logger.error(f"Failed to check job status after {max_retries} retries")
+                    raise Exception(f"Failed to check job status after {max_retries} retries: {e}")
+
                 time.sleep(poll_interval)
                 elapsed = time.time() - start_time
                 continue
 
             data = response.json()
             status = data.get('status')
+
+            # Log complete response for debugging
+            logger.info(f"Job {job_id} response: {data}")
 
             if status == 'COMPLETED':
                 logger.info(f"Job {job_id} completed successfully")
@@ -146,10 +160,10 @@ class RunPodClient:
 
             elif status in ['IN_QUEUE', 'IN_PROGRESS']:
                 elapsed = time.time() - start_time
-                logger.debug(f"Job {job_id} status: {status} ({elapsed:.1f}s elapsed)")
+                logger.info(f"Job {job_id} status: {status} ({elapsed:.1f}s elapsed)")  # Changed to INFO to see in logs
 
             else:
-                logger.warning(f"Unknown job status: {status}")
+                logger.warning(f"Unknown job status: {status}. Full response: {data}")
 
             time.sleep(poll_interval)
             elapsed = time.time() - start_time

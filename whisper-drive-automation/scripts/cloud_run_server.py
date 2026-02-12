@@ -345,42 +345,116 @@ def process_files():
                             results['skipped'].append(file_name)
                             continue
 
-                        # Download file from Drive
-                        logger.info(f"📥 Téléchargement fichier: {file_name}")
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file_name).suffix) as temp_file:
-                            downloaded_path = temp_file.name
-                            orchestrator.drive_manager.download_file(file_id, file_name, downloaded_path)
-
-                        # Extract audio if video file
+                        # Check if video file to stream extraction
                         file_ext = Path(file_name).suffix.lower()
                         video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv']
 
                         if file_ext in video_extensions:
-                            logger.info(f"🎬 Extraction audio depuis vidéo: {file_name}")
-                            audio_path = downloaded_path.replace(file_ext, '.mp3')
+                            # Stream video from Drive and extract audio with ffmpeg directly
+                            logger.info(f"🎬 Stream + extraction audio: {file_name}")
+                            audio_path = tempfile.mktemp(suffix='.wav')
 
-                            # Extract audio with ffmpeg
+                            # Get media stream from Drive
+                            media_request = orchestrator.drive_manager.service.files().get_media(
+                                fileId=file_id,
+                                supportsAllDrives=True
+                            )
+
+                            # Start ffmpeg process to read from stdin
                             import subprocess
-                            result = subprocess.run([
-                                'ffmpeg', '-i', downloaded_path,
+                            from googleapiclient.http import MediaIoBaseDownload
+                            import io
+
+                            ffmpeg_process = subprocess.Popen([
+                                'ffmpeg',
+                                '-i', 'pipe:0',  # Read from stdin
                                 '-vn',  # No video
-                                '-acodec', 'libmp3lame',
-                                '-ab', '128k',  # Bitrate
+                                '-acodec', 'pcm_s16le',  # WAV PCM 16-bit (more robust than MP3)
                                 '-ar', '16000',  # Sample rate for Whisper
+                                '-ac', '1',  # Mono
                                 '-y',  # Overwrite
                                 audio_path
-                            ], capture_output=True, text=True)
+                            ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-                            if result.returncode != 0:
-                                logger.error(f"❌ Erreur extraction audio: {result.stderr}")
-                                raise Exception(f"Failed to extract audio: {result.stderr}")
+                            # Stream chunks from Drive to ffmpeg stdin
+                            try:
+                                buffer = io.BytesIO()
+                                downloader = MediaIoBaseDownload(buffer, media_request, chunksize=10*1024*1024)  # 10MB chunks
+                                done = False
+                                progress_logged = 0
 
-                            # Remove original video file
-                            os.remove(downloaded_path)
-                            logger.info(f"✅ Audio extrait: {Path(audio_path).stat().st_size / 1024 / 1024:.1f} MB")
+                                while not done:
+                                    # Download next chunk
+                                    status, done = downloader.next_chunk()
+
+                                    # Write accumulated data to ffmpeg and reset buffer
+                                    chunk_data = buffer.getvalue()
+                                    if chunk_data:
+                                        ffmpeg_process.stdin.write(chunk_data)
+                                        ffmpeg_process.stdin.flush()
+                                        # Reset buffer by clearing it (don't create new BytesIO)
+                                        buffer.seek(0)
+                                        buffer.truncate()
+
+                                    if status:
+                                        progress = int(status.progress() * 100)
+                                        if progress >= progress_logged + 20:  # Log every 20%
+                                            logger.info(f"📥 Stream: {progress}%")
+                                            progress_logged = progress
+
+                                # Close stdin to signal EOF to ffmpeg
+                                ffmpeg_process.stdin.close()
+
+                                # Wait for ffmpeg to finish
+                                returncode = ffmpeg_process.wait(timeout=600)
+
+                                # Read output
+                                stderr_output = ffmpeg_process.stderr.read().decode()
+
+                                if returncode != 0:
+                                    logger.error(f"❌ Erreur extraction audio: {stderr_output}")
+                                    raise Exception(f"Failed to extract audio: {stderr_output}")
+
+                                # Verify audio file integrity with ffprobe
+                                logger.info(f"🔍 Vérification intégrité du fichier audio...")
+                                try:
+                                    probe_result = subprocess.run([
+                                        'ffprobe',
+                                        '-v', 'error',
+                                        '-show_entries', 'format=duration,size',
+                                        '-of', 'default=noprint_wrappers=1:nokey=1',
+                                        audio_path
+                                    ], capture_output=True, text=True, timeout=30)
+
+                                    if probe_result.returncode != 0:
+                                        logger.error(f"❌ Fichier audio corrompu: {probe_result.stderr}")
+                                        raise Exception(f"Audio file integrity check failed: {probe_result.stderr}")
+
+                                    # Get duration and size from ffprobe
+                                    probe_lines = probe_result.stdout.strip().split('\n')
+                                    if len(probe_lines) >= 2:
+                                        duration = float(probe_lines[0])
+                                        size_bytes = int(probe_lines[1])
+                                        logger.info(f"✅ Audio valide: {size_bytes / 1024 / 1024:.1f} MB, durée: {duration:.1f}s")
+                                    else:
+                                        logger.info(f"✅ Audio extrait: {Path(audio_path).stat().st_size / 1024 / 1024:.1f} MB")
+
+                                except subprocess.TimeoutExpired:
+                                    logger.error(f"❌ Timeout lors de la vérification d'intégrité")
+                                    raise Exception("Audio integrity check timed out")
+                                except Exception as e:
+                                    logger.error(f"❌ Erreur vérification intégrité: {e}")
+                                    raise
+
+                            except Exception as e:
+                                ffmpeg_process.kill()
+                                raise
                         else:
-                            # Already an audio file
-                            audio_path = downloaded_path
+                            # Audio file - download normally (small files)
+                            logger.info(f"📥 Téléchargement fichier audio: {file_name}")
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file_name).suffix) as temp_file:
+                                audio_path = temp_file.name
+                                orchestrator.drive_manager.download_file(file_id, file_name, audio_path)
 
                         # Transcribe with RunPod backend
                         logger.info(f"🎤 Transcription RunPod: {file_name}")
@@ -417,6 +491,20 @@ def process_files():
                             )
 
                             if output_result:
+                                # Upload all generated files to Drive
+                                logger.info(f"📤 Upload des fichiers sur Drive: {file_name}")
+                                for file_path in output_result.values():
+                                    if file_path and os.path.exists(file_path):
+                                        file_name_drive = Path(file_path).name
+                                        orchestrator.drive_manager.upload_file(
+                                            file_path,
+                                            file_name_drive,
+                                            output_folder_id
+                                        )
+                                        logger.info(f"  ✅ Uploadé: {file_name_drive}")
+                                        # Cleanup local file after upload
+                                        os.remove(file_path)
+
                                 logger.info(f"✅ Transcription complète: {file_name}")
                                 results['transcribed_runpod'].append(file_name)
                             else:

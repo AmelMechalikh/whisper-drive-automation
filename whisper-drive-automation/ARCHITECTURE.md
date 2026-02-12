@@ -1,4 +1,141 @@
-# Architecture du Système Highlights
+# Architecture du Système
+
+> **Note:** Ce document décrit l'architecture complète du système incluant :
+> - **Système de highlights** (extraction de segments vidéo)
+> - **Système de transcription** (audio → texte avec Whisper)
+
+---
+
+# 🎯 Système de Transcription (Whisper)
+
+## Architecture ACTUELLE (2026-02) - RunPod GPU Direct
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        GOOGLE DRIVE                              │
+│  📁 source_files/ ← Fichiers audio/vidéo à transcrire           │
+│  📁 transcriptions/ ← Transcriptions générées (.txt, .srt...)   │
+└─────────────────────────────────────────────────────────────────┘
+                    ↑                           ↓
+                    │                           │
+         ┌──────────┴──────────┐    ┌──────────┴──────────┐
+         │   CLOUD SCHEDULER    │    │                     │
+         │  (toutes les 5 min)  │    │                     │
+         └──────────┬──────────┘    │                     │
+                    │                │                     │
+                    ↓                │                     │
+         ┌─────────────────────┐    │                     │
+         │    CLOUD RUN        │    │                     │
+         │  whisper-automation │    │                     │
+         │                     │    │                     │
+         │ 1. Scan nouveaux    │    │                     │
+         │    fichiers         │    │                     │
+         │ 2. Upload → GCS     │    │                     │
+         │ 3. Call RunPod API  │────┘                     │
+         │ 4. Upload résultats │                          │
+         └─────────────────────┘                          │
+                    ↓                                     │
+         ┌─────────────────────┐                         │
+         │   RUNPOD GPU        │                         │
+         │  (Serverless)       │                         │
+         │                     │                         │
+         │ - Whisper large-v3  │                         │
+         │ - RTX 4090/A100     │                         │
+         │ - ~30s pour 5min    │                         │
+         └─────────────────────┘
+```
+
+### Workflow de transcription
+
+```python
+1. Cloud Scheduler trigger toutes les 5 minutes
+2. Cloud Run (whisper-automation):
+   - Scan source_files/ pour nouveaux fichiers
+   - Vérifie si déjà transcrit (skip si oui)
+   - Pour chaque nouveau fichier:
+     a. Upload audio → GCS temp bucket (URL signée 1h)
+     b. Call RunPod API avec audio_url
+     c. Poll job status jusqu'à completion
+     d. Récupère résultats (segments, timestamps)
+     e. Génère tous les formats:
+        - transcription.txt
+        - with_timestamps.srt
+        - word_timestamps.txt
+        - paragraphs_timestamps (Google Doc)
+        - complete_data.json
+     f. Upload vers Drive transcriptions/
+3. Aucune VM requise ✅
+```
+
+### Configuration (highlight_config.json)
+
+```json
+{
+  "transcription_backend": {
+    "provider": "gpu_runpod",
+    "gpu_runpod": {
+      "device": "cuda",
+      "model": "large-v3-turbo",
+      "api_endpoint": "https://api.runpod.ai/v2/XXXXX",
+      "api_key_env": "RUNPOD_API_KEY",
+      "timeout_seconds": 600,
+      "max_retries": 3
+    }
+  }
+}
+```
+
+### Coûts (transcription)
+
+| Composant | Coût/heure | Usage typique |
+|-----------|------------|---------------|
+| Cloud Run whisper-automation | Gratuit (free tier) | 5 min toutes les 5 min |
+| RunPod GPU (RTX 4090) | $0.26/hr | ~30s par 5min audio |
+| GCS Storage | $0.02/GB/mois | Temp files (auto-delete 1j) |
+
+**Coût total: ~$0.01 par heure d'audio transcrit**
+
+---
+
+## Architecture OBSOLÈTE ⚠️ (VM-based) - Désuète depuis 2026-01
+
+> **Cette architecture n'est plus utilisée.** Elle est gardée pour référence historique.
+
+### Ancien système (CPU local sur VM)
+
+```
+┌─────────────────────────────────────────┐
+│         GOOGLE DRIVE                     │
+│  📁 source_files/ ← Audio/vidéo          │
+│  📁 queue/ ← Jobs JSON                   │
+│  📁 transcriptions/ ← Résultats          │
+└─────────────────────────────────────────┘
+            ↓                      ↑
+┌─────────────────────┐   ┌──────────────┐
+│   CLOUD RUN         │   │   VM GCP     │
+│  (Orchestrateur)    │   │   Worker     │
+│                     │   │              │
+│ 1. Scan fichiers    │   │ 1. Poll jobs │
+│ 2. Crée jobs JSON   │   │ 2. Whisper   │
+│ 3. Allume VM        │──→│    (CPU)     │
+└─────────────────────┘   │ 3. Upload    │
+                          │ 4. Shutdown  │
+                          └──────────────┘
+```
+
+### Pourquoi obsolète ?
+
+| Critère | Ancien (VM) | Nouveau (RunPod) |
+|---------|-------------|------------------|
+| **Vitesse** | ~10 min pour 5 min audio | ~30s pour 5 min audio |
+| **Qualité** | Base model (moyenne) | Large-v3 (excellente) |
+| **Coût** | VM toujours allumée $20/mois | Serverless $5/mois |
+| **Complexité** | VM + queue + jobs | Direct API call |
+| **Maintenance** | VM à gérer | Serverless (aucune) |
+
+---
+
+# 🎬 Système de Highlights (Extraction vidéo)
 
 ## Vue d'ensemble
 
@@ -223,13 +360,25 @@ from highlight_extractor import HighlightExtractor  # Pandas seulement
 - Installer torch/whisperx UNIQUEMENT sur cette VM
 - Job JSON avec flag: `"add_subtitles": true`
 
-## État actuel (2026-01-23)
+## État actuel (2026-02-06)
 
-✅ **Cloud Run**: Orchestrateur déployé (léger, sans torch)
-✅ **VM Worker**: Découpe vidéos (sans sous-titres)
-🔜 **VM Subtitles**: À créer si besoin sous-titres
+### Système de transcription
+✅ **Cloud Run whisper-automation**: Transcription directe via RunPod GPU
+✅ **RunPod Serverless**: Large-v3-turbo sur RTX 4090
+✅ **GCS Bucket**: Stockage temporaire audio (auto-delete 1j)
+❌ **VM Worker CPU**: Obsolète, désactivé
 
-**Derniers fixes:**
-1. ✅ Suppression import VideoSegmentExtractor de l'orchestrator
-2. ✅ Filtrage server-side des _paragraphs_timestamps
-3. ✅ Création automatique de jobs pour nouveaux fichiers
+### Système de highlights
+✅ **Cloud Run highlights-orchestrator**: Scan documents READY (léger, sans torch)
+✅ **VM Worker highlights**: Découpe vidéos (sans sous-titres)
+🔜 **VM Subtitles**: À créer si besoin sous-titres brûlés
+
+**Architecture actuelle:**
+- **Transcription:** Cloud Run → RunPod API → Drive (serverless, rapide)
+- **Highlights:** Cloud Run → VM Worker → Drive (VM on-demand)
+
+**Dernières évolutions:**
+1. ✅ Migration vers RunPod GPU pour transcriptions (2026-01)
+2. ✅ Suppression VM CPU transcription (économies + vitesse)
+3. ✅ Backend abstraction layer (facile de changer)
+4. ✅ Configuration unifiée (highlight_config.json)

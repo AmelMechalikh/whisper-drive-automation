@@ -1,0 +1,104 @@
+steps:
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        #!/bin/bash
+        set -e
+        
+        echo "🧹 Nettoyage automatique des images Docker"
+        echo "=========================================="
+        
+        KEEP=3
+        
+        # Fonction de nettoyage Artifact Registry
+        cleanup_artifact() {
+            local package="$1"
+            local name=$(basename "$package")
+            
+            echo "📦 $name"
+            
+            versions=$(gcloud artifacts docker images list "$package" \
+                --format='value(version)' \
+                --sort-by=~CREATE_TIME 2>/dev/null || true)
+            
+            if [ -z "$versions" ]; then
+                echo "   (vide)"
+                return
+            fi
+            
+            total=$(echo "$versions" | wc -l | tr -d ' ')
+            to_del=$((total - KEEP))
+            
+            if [ $to_del -le 0 ]; then
+                echo "   ✓ $total versions"
+                return
+            fi
+            
+            echo "   $total versions → suppression de $to_del"
+            echo "$versions" | tail -n +$((KEEP + 1)) | while read ver; do
+                if [ -n "$ver" ]; then
+                    gcloud artifacts docker images delete "${package}@${ver}" --quiet --delete-tags 2>/dev/null || true
+                fi
+            done
+            echo "   ✅"
+        }
+        
+        # Fonction de nettoyage Container Registry  
+        cleanup_gcr() {
+            local image="$1"
+            local name=$(basename "$image")
+            
+            echo "📦 $name"
+            
+            digests=$(gcloud container images list-tags "$image" \
+                --format='value(digest)' \
+                --sort-by=~timestamp 2>/dev/null || true)
+            
+            if [ -z "$digests" ]; then
+                echo "   (vide)"
+                return
+            fi
+            
+            total=$(echo "$digests" | wc -l | tr -d ' ')
+            to_del=$((total - KEEP))
+            
+            if [ $to_del -le 0 ]; then
+                echo "   ✓ $total versions"
+                return
+            fi
+            
+            echo "   $total versions → suppression de $to_del"
+            echo "$digests" | tail -n +$((KEEP + 1)) | while read dig; do
+                if [ -n "$dig" ]; then
+                    gcloud container images delete "${image}@${dig}" --quiet --force-delete-tags 2>/dev/null || true
+                fi
+            done
+            echo "   ✅"
+        }
+        
+        # Nettoyer Artifact Registry
+        echo ""
+        echo "🔍 Artifact Registry..."
+        pkgs=$(gcloud artifacts docker images list \
+            "europe-west1-docker.pkg.dev/artificial-intelligence-cmk/cloud-run-source-deploy" \
+            --format='value(package)' 2>/dev/null | sort -u || true)
+        
+        for pkg in $pkgs; do
+            [ -n "$pkg" ] && cleanup_artifact "$pkg"
+        done
+        
+        # Nettoyer Container Registry
+        echo ""
+        echo "🔍 Container Registry..."
+        for img in highlights-orchestrator whisper-transcription highlights-processor whisper-automation; do
+            cleanup_gcr "gcr.io/artificial-intelligence-cmk/$img"
+        done
+        
+        echo ""
+        echo "=========================================="
+        echo "✅ Nettoyage terminé - gardé 3 versions max"
+        echo "=========================================="
+
+timeout: '600s'

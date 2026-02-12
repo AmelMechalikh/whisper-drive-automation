@@ -35,7 +35,7 @@ gcloud run deploy "$SERVICE_NAME" \
     --platform=managed \
     --allow-unauthenticated \
     --service-account=id-whisper-automation@artificial-intelligence-cmk.iam.gserviceaccount.com \
-    --memory=2Gi \
+    --memory=4Gi \
     --timeout=3600 \
     --max-instances=10 \
     --min-instances=0
