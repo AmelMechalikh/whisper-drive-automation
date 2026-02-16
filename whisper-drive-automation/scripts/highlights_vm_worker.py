@@ -405,31 +405,48 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
         if not created_segments:
             logger.warning(f"⚠️ Aucun segment créé")
 
-            # Marquer comme failed avec la raison
-            update_job_status(drive_manager, job_id, job_data, 'failed', 'No segments created from Excel file')
+            # Gérer les retries
+            retry_count = job_data.get('retry_count', 0)
+            retry_count += 1
 
-            # Déplacer vers failed_jobs
-            failed_folder = config['drive_folders'].get('failed_jobs')
-            failed_name = job_name.replace('highlight_job_', 'failed_')
+            error_reason = 'No segments created from Excel file'
+            job_data['retry_count'] = retry_count
+            job_data['last_error'] = error_reason
+            job_data['last_error_time'] = datetime.now().isoformat()
 
-            if failed_folder:
-                drive_manager.service.files().update(
-                    fileId=job_id,
-                    addParents=failed_folder,
-                    removeParents=config['drive_folders']['queue_highlights'],
-                    body={'name': failed_name},
-                    supportsAllDrives=True
-                ).execute()
-                logger.info(f"⚠️  Job déplacé vers failed_jobs: {failed_name}")
+            if retry_count < 3:
+                # Retry: remettre le job dans la queue
+                logger.warning(f"⚠️  Tentative {retry_count}/3 - Retry dans la queue...")
+                update_job_status(drive_manager, job_id, job_data, 'pending', f'Retry {retry_count}/3: {error_reason}')
+                logger.info(f"🔄 Job remis en queue pour retry {retry_count}/3")
+                return
             else:
-                # Fallback: renommer en erreur dans la queue
-                drive_manager.service.files().update(
-                    fileId=job_id,
-                    body={'name': failed_name},
-                    supportsAllDrives=True
-                ).execute()
-                logger.info(f"⚠️  Job renommé: {failed_name}")
-            return
+                # Max retries atteint: marquer comme failed définitivement
+                logger.error(f"❌ Max retries atteint ({retry_count}/3) - Job marqué comme failed")
+                update_job_status(drive_manager, job_id, job_data, 'failed', f'Failed after {retry_count} attempts: {error_reason}')
+
+                # Déplacer vers failed_jobs
+                failed_folder = config['drive_folders'].get('failed_jobs')
+                failed_name = job_name.replace('highlight_job_', 'failed_')
+
+                if failed_folder:
+                    drive_manager.service.files().update(
+                        fileId=job_id,
+                        addParents=failed_folder,
+                        removeParents=config['drive_folders']['queue_highlights'],
+                        body={'name': failed_name},
+                        supportsAllDrives=True
+                    ).execute()
+                    logger.info(f"⚠️  Job déplacé vers failed_jobs: {failed_name}")
+                else:
+                    # Fallback: renommer en erreur dans la queue
+                    drive_manager.service.files().update(
+                        fileId=job_id,
+                        body={'name': failed_name},
+                        supportsAllDrives=True
+                    ).execute()
+                    logger.info(f"⚠️  Job renommé: {failed_name}")
+                return
 
         logger.info(f"✅ {len(created_segments)} segment(s) créé(s)")
 
@@ -561,35 +578,52 @@ def process_highlights_job(drive_manager, video_extractor, job_file, config, tem
         error_traceback = traceback.format_exc()
         logger.error(error_traceback)
 
-        # Marquer le job comme failed avec la raison de l'erreur
-        error_reason = f"{type(e).__name__}: {str(e)}"
+        # Gérer les retries (max 3 tentatives)
         if job_data:
-            update_job_status(drive_manager, job_id, job_data, 'failed', error_reason)
+            retry_count = job_data.get('retry_count', 0)
+            retry_count += 1
 
-        # Déplacer vers failed_jobs si le dossier existe
-        try:
-            failed_folder = config['drive_folders'].get('failed_jobs')
-            if failed_folder:
-                failed_name = job_name.replace('highlight_job_', 'failed_')
-                drive_manager.service.files().update(
-                    fileId=job_id,
-                    addParents=failed_folder,
-                    removeParents=config['drive_folders']['queue_highlights'],
-                    body={'name': failed_name},
-                    supportsAllDrives=True
-                ).execute()
-                logger.info(f"⚠️  Job déplacé vers failed_jobs: {failed_name}")
+            # Ajouter l'erreur et la stacktrace au job
+            error_reason = f"{type(e).__name__}: {str(e)}"
+            job_data['retry_count'] = retry_count
+            job_data['last_error'] = error_reason
+            job_data['last_error_traceback'] = error_traceback
+            job_data['last_error_time'] = datetime.now().isoformat()
+
+            if retry_count < 3:
+                # Retry: remettre le job dans la queue avec le compteur incrémenté
+                logger.warning(f"⚠️  Tentative {retry_count}/3 - Retry dans la queue...")
+                update_job_status(drive_manager, job_id, job_data, 'pending', f'Retry {retry_count}/3 after error: {error_reason}')
+                logger.info(f"🔄 Job remis en queue pour retry {retry_count}/3")
             else:
-                # Fallback: renommer en erreur dans la queue
-                error_name = job_name.replace('highlight_job_', 'highlight_error_')
-                drive_manager.service.files().update(
-                    fileId=job_id,
-                    body={'name': error_name},
-                    supportsAllDrives=True
-                ).execute()
-                logger.info(f"⚠️  Job renommé en erreur: {error_name}")
-        except Exception as move_error:
-            logger.warning(f"⚠️  Impossible de déplacer le job failed: {move_error}")
+                # Max retries atteint: marquer comme failed définitivement
+                logger.error(f"❌ Max retries atteint ({retry_count}/3) - Job marqué comme failed")
+                update_job_status(drive_manager, job_id, job_data, 'failed', f'Failed after {retry_count} attempts: {error_reason}')
+
+                # Déplacer vers failed_jobs
+                try:
+                    failed_folder = config['drive_folders'].get('failed_jobs')
+                    if failed_folder:
+                        failed_name = job_name.replace('highlight_job_', 'failed_')
+                        drive_manager.service.files().update(
+                            fileId=job_id,
+                            addParents=failed_folder,
+                            removeParents=config['drive_folders']['queue_highlights'],
+                            body={'name': failed_name},
+                            supportsAllDrives=True
+                        ).execute()
+                        logger.info(f"⚠️  Job déplacé vers failed_jobs: {failed_name}")
+                    else:
+                        # Fallback: renommer en erreur dans la queue
+                        error_name = job_name.replace('highlight_job_', 'highlight_error_')
+                        drive_manager.service.files().update(
+                            fileId=job_id,
+                            body={'name': error_name},
+                            supportsAllDrives=True
+                        ).execute()
+                        logger.info(f"⚠️  Job renommé en erreur: {error_name}")
+                except Exception as move_error:
+                    logger.warning(f"⚠️  Impossible de déplacer le job failed: {move_error}")
 
 
 if __name__ == '__main__':

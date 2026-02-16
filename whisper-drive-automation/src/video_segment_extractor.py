@@ -546,24 +546,29 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     ) -> bool:
         """
         Extrait un segment avec ffmpeg
-        
+
         Args:
             input_path: Fichier source
             output_path: Fichier de sortie
             start_seconds: Début en secondes
             duration: Durée en secondes
-            
+
         Returns:
             True si succès
         """
         try:
+            # Détecter si c'est un fichier audio pur ou une vidéo
+            audio_extensions = ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma']
+            source_ext = Path(input_path).suffix.lower()
+            is_audio_only = source_ext in audio_extensions
+
             # Commande ffmpeg pour extraire le segment
             # -accurate_seek : seek précis même avec -c copy
             # -ss : position de départ (AVANT -i pour éviter écran noir)
             # -i : input file
             # -t : durée
-            # -c:v copy : copie le stream vidéo sans réencoder (rapide)
-            # -c:a aac : ré-encode l'audio en AAC (compatible partout, évite les problèmes de codec)
+            # Pour audio pur : -c:a copy (pas de ré-encodage, garde format original)
+            # Pour vidéo : -c:v copy -c:a aac (ré-encode audio en AAC pour compatibilité)
             # -avoid_negative_ts make_zero : évite les problèmes de timestamps négatifs
             cmd = [
                 'ffmpeg',
@@ -571,12 +576,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 '-ss', str(start_seconds),
                 '-i', input_path,
                 '-t', str(duration),
-                '-c:v', 'copy',
-                '-c:a', 'aac',
+            ]
+
+            # Adapter les codecs selon le type de fichier
+            if is_audio_only:
+                # Audio pur : copie directe sans ré-encodage
+                cmd.extend(['-c:a', 'copy'])
+            else:
+                # Vidéo : copie vidéo + ré-encode audio en AAC
+                cmd.extend(['-c:v', 'copy', '-c:a', 'aac'])
+
+            cmd.extend([
                 '-avoid_negative_ts', 'make_zero',
                 '-y',  # Overwrite output file
                 output_path
-            ]
+            ])
             
             # Exécuter ffmpeg
             subprocess.run(
@@ -651,16 +665,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     f.write(f"file '{escaped_path}'\n")
             
             # 3. Fusionner tous les segments
+            # Détecter si la sortie est audio pur ou vidéo
+            audio_extensions = ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg', '.wma']
+            output_ext = Path(output_path).suffix.lower()
+            is_audio_only = output_ext in audio_extensions
+
             cmd = [
                 'ffmpeg',
                 '-f', 'concat',
                 '-safe', '0',
                 '-i', str(concat_file),
-                '-c:v', 'copy',
-                '-c:a', 'aac',
-                '-y',
-                output_path
             ]
+
+            # Adapter les codecs selon le type de sortie
+            if is_audio_only:
+                # Audio pur : copie directe
+                cmd.extend(['-c:a', 'copy'])
+            else:
+                # Vidéo : copie vidéo + AAC pour audio
+                cmd.extend(['-c:v', 'copy', '-c:a', 'aac'])
+
+            cmd.extend(['-y', output_path])
 
             subprocess.run(
                 cmd,
