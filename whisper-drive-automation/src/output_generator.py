@@ -27,40 +27,30 @@ class OutputGenerator:
     
     def generate_all_outputs(self, base_filename, whisper_result, paragraphs=None):
         """
-        Génère tous les formats de sortie
-        
+        Génère les formats de sortie essentiels (paragraphs_timestamps + complete_json)
+
         Args:
             base_filename: Nom de base du fichier (sans extension)
             whisper_result: Résultat de transcription Whisper
             paragraphs: Paragraphes groupés (optionnel)
-        
+
         Returns:
             dict: Chemins des fichiers générés
         """
         output_files = {}
         try:
-            # 1. Transcription texte simple
-            txt_path = self._generate_transcription_txt(base_filename, whisper_result)
-            output_files['transcription'] = txt_path
-
-            # 2. Format SRT avec timestamps
-            srt_path = self._generate_srt(base_filename, whisper_result)
-            output_files['srt'] = srt_path
-
-            # 3. Word timestamps
-            word_timestamps_path = self._generate_word_timestamps(base_filename, whisper_result)
-            output_files['word_timestamps'] = word_timestamps_path
-
-            # 4. Paragraphes avec timestamps (si disponible)
+            # 1. Paragraphes avec timestamps (Google Doc) - ESSENTIEL
             if paragraphs:
                 paragraphs_path = self._generate_paragraphs_timestamps(base_filename, paragraphs)
                 output_files['paragraphs'] = paragraphs_path
+            else:
+                self.logger.warning(f"⚠️ Pas de paragraphes disponibles pour {base_filename}")
 
-            # 5. JSON complet
+            # 2. JSON complet (data.json) - ESSENTIEL
             json_path = self._generate_complete_json(base_filename, whisper_result, paragraphs)
             output_files['complete_json'] = json_path
 
-            self.logger.info(f"✅ Tous les formats générés pour: {base_filename}")
+            self.logger.info(f"✅ Formats essentiels générés pour: {base_filename} (paragraphs + JSON)")
             return output_files
 
         except Exception as e:
@@ -138,23 +128,26 @@ class OutputGenerator:
 
         full_content = '\n\n'.join(content_lines)
 
-        # Si drive_manager est disponible, créer un Google Doc
+        # Créer un Google Doc si drive_manager disponible, sinon TXT local
         if self.drive_manager and self.output_folder_id:
             doc_name = f"{base_filename}_paragraphs_timestamps"
-            doc_id = self._create_google_doc(doc_name, full_content)
-            self.logger.info(f"📝 Google Doc créé: {doc_name} (ID: {doc_id})")
-            # Retourner un format qui indique que c'est un Google Doc
-            return f"gdoc:{doc_id}"
-        else:
-            # Fallback: créer un fichier local .txt
-            filename = f"{base_filename}_paragraphs_timestamps.txt"
-            file_path = self.output_dir / filename
+            try:
+                doc_id = self._create_google_doc(doc_name, full_content)
+                self.logger.info(f"📝 Google Doc créé: {doc_name} (ID: {doc_id})")
+                return f"gdoc:{doc_id}"
+            except Exception as e:
+                self.logger.error(f"❌ Erreur création Google Doc: {e}")
+                # Fallback sur fichier local
 
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(full_content)
+        # Fichier local TXT (fallback ou si pas de drive_manager)
+        filename = f"{base_filename}_paragraphs_timestamps.txt"
+        file_path = self.output_dir / filename
 
-            self.logger.info(f"📝 Paragraphes avec timestamps sauvés: {file_path}")
-            return str(file_path)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(full_content)
+
+        self.logger.info(f"📝 Paragraphes avec timestamps sauvés (TXT): {file_path}")
+        return str(file_path)
 
     def _create_google_doc(self, doc_name, content):
         """
