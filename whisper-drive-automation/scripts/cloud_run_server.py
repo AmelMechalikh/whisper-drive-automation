@@ -348,11 +348,24 @@ def process_files():
                         # Check if video file to stream extraction
                         file_ext = Path(file_name).suffix.lower()
                         video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv']
+                        audio_extensions = ['.wav', '.mp3', '.m4a', '.flac', '.aac']
 
+                        # IMPORTANT: Skip video files - only process audio files (WAV)
+                        # Videos are uploaded by desktop app with extracted audio
+                        # We only transcribe the pre-extracted audio files
                         if file_ext in video_extensions:
+                            logger.info(f"⏭️  Skip vidéo (audio WAV déjà uploadé): {file_name}")
+                            results['skipped'].append(file_name)
+                            continue
+
+                        if file_ext in audio_extensions:
                             # Stream video from Drive and extract audio with ffmpeg directly
                             logger.info(f"🎬 Stream + extraction audio: {file_name}")
-                            audio_path = tempfile.mktemp(suffix='.wav')
+                            # Create a real temporary file (not just a name)
+                            temp_audio_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+                            audio_path = temp_audio_file.name
+                            temp_audio_file.close()  # Close it so ffmpeg can write to it
+                            logger.info(f"📝 Fichier temp créé: {audio_path} (existe: {os.path.exists(audio_path)})")
 
                             # Get media stream from Drive
                             media_request = orchestrator.drive_manager.service.files().get_media(
@@ -378,42 +391,52 @@ def process_files():
 
                             # Stream chunks from Drive to ffmpeg stdin
                             try:
+                                # MediaIoBaseDownload accumulates ALL data in buffer, we need to track what we've already written
                                 buffer = io.BytesIO()
                                 downloader = MediaIoBaseDownload(buffer, media_request, chunksize=10*1024*1024)  # 10MB chunks
                                 done = False
                                 progress_logged = 0
+                                last_position = 0
 
                                 while not done:
-                                    # Download next chunk
+                                    # Download next chunk (appends to buffer)
                                     status, done = downloader.next_chunk()
 
-                                    # Write accumulated data to ffmpeg and reset buffer
-                                    chunk_data = buffer.getvalue()
-                                    if chunk_data:
-                                        ffmpeg_process.stdin.write(chunk_data)
+                                    # Get current buffer position
+                                    current_position = buffer.tell()
+
+                                    # Read only the NEW data since last write
+                                    buffer.seek(last_position)
+                                    new_data = buffer.read()
+
+                                    if new_data:
+                                        ffmpeg_process.stdin.write(new_data)
                                         ffmpeg_process.stdin.flush()
-                                        # Reset buffer by clearing it (don't create new BytesIO)
-                                        buffer.seek(0)
-                                        buffer.truncate()
+                                        last_position = buffer.tell()
 
                                     if status:
                                         progress = int(status.progress() * 100)
                                         if progress >= progress_logged + 20:  # Log every 20%
-                                            logger.info(f"📥 Stream: {progress}%")
+                                            logger.info(f"📥 Stream: {progress}% ({last_position / 1024 / 1024:.1f} MB)")
                                             progress_logged = progress
 
                                 # Close stdin to signal EOF to ffmpeg
+                                logger.info(f"📥 Stream: 100% - Fermeture du stream")
                                 ffmpeg_process.stdin.close()
 
                                 # Wait for ffmpeg to finish (30 min timeout for large files)
+                                logger.info(f"⏳ Attente fin FFmpeg...")
                                 returncode = ffmpeg_process.wait(timeout=1800)
 
                                 # Read output
                                 stderr_output = ffmpeg_process.stderr.read().decode()
+                                logger.info(f"🔍 FFmpeg stderr ({len(stderr_output)} bytes)")
 
                                 if returncode != 0:
-                                    logger.error(f"❌ Erreur extraction audio: {stderr_output}")
-                                    raise Exception(f"Failed to extract audio: {stderr_output}")
+                                    logger.error(f"❌ Erreur extraction audio (code {returncode}): {stderr_output[-500:]}")
+                                    raise Exception(f"Failed to extract audio: {stderr_output[-500:]}")
+
+                                logger.info(f"✅ FFmpeg terminé avec succès")
 
                                 # Verify audio file integrity with ffprobe
                                 logger.info(f"🔍 Vérification intégrité du fichier audio...")
@@ -452,6 +475,7 @@ def process_files():
                                     raise
 
                             except Exception as e:
+                                logger.error(f"❌ Exception pendant streaming FFmpeg: {type(e).__name__}: {e}")
                                 ffmpeg_process.kill()
                                 raise
                         else:
@@ -460,6 +484,17 @@ def process_files():
                             with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file_name).suffix) as temp_file:
                                 audio_path = temp_file.name
                                 orchestrator.drive_manager.download_file(file_id, file_name, audio_path)
+
+                        # Upload audio WAV to Drive for monitoring
+                        audio_size_mb = Path(audio_path).stat().st_size / 1024 / 1024
+                        audio_filename = f"{base_filename}_audio.wav"
+                        logger.info(f"📤 Upload audio pour monitoring: {audio_filename} ({audio_size_mb:.1f} MB)")
+                        orchestrator.drive_manager.upload_file(
+                            audio_path,
+                            audio_filename,
+                            output_folder_id
+                        )
+                        logger.info(f"  ✅ Audio uploadé sur Drive")
 
                         # Transcribe with RunPod backend
                         logger.info(f"🎤 Transcription RunPod: {file_name}")
