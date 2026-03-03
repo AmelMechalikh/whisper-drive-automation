@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transcription App</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       AUTH SCREEN
+  ════════════════════════════════════════════════════════════ -->
+  <div id="auth-screen" class="screen">
+    <div class="auth-container">
+      <h1>Transcription App</h1>
+      <p>Connectez-vous avec Google pour commencer</p>
+      <button id="auth-button" class="primary-button">
+        <img src="https://www.google.com/favicon.ico" alt="Google" class="google-icon">
+        Se connecter avec Google
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       ONBOARDING WIZARD (premier lancement)
+  ════════════════════════════════════════════════════════════ -->
+  <div id="onboarding-screen" class="screen hidden">
+    <div class="onboarding-container">
+      <div class="onboarding-steps">
+        <div class="step active" data-step="1">1</div>
+        <div class="step-line"></div>
+        <div class="step" data-step="2">2</div>
+        <div class="step-line"></div>
+        <div class="step" data-step="3">3</div>
+      </div>
+
+      <!-- Step 1: Google (already done) -->
+      <div id="wizard-step-1" class="wizard-step">
+        <h2>Connexion Google</h2>
+        <p class="step-desc">Vous êtes connecté avec Google Drive.</p>
+        <div class="success-badge">✅ Connecté</div>
+        <button id="wizard-next-1" class="primary-button">Suivant</button>
+      </div>
+
+      <!-- Step 2: RunPod -->
+      <div id="wizard-step-2" class="wizard-step hidden">
+        <h2>RunPod (transcription GPU)</h2>
+        <p class="step-desc">RunPod transcrit votre audio en texte à ~$0.01/heure.</p>
+        <div class="form-group">
+          <label>API Key RunPod</label>
+          <input type="password" id="wz-runpod-key" placeholder="rp_xxxxxxxx..." />
+        </div>
+        <div class="form-group">
+          <label>Endpoint ID</label>
+          <input type="text" id="wz-runpod-endpoint" placeholder="abc123def456" />
+          <small>Dans RunPod → Serverless → votre endpoint → ID</small>
+        </div>
+        <div class="form-group">
+          <label>Dossier source Drive ID</label>
+          <input type="text" id="wz-source-folder" placeholder="1A29pkQvrBodU_HxNS8..." />
+          <small>ID du dossier Google Drive "source_files"</small>
+        </div>
+        <div class="form-group">
+          <label>Dossier transcriptions Drive ID</label>
+          <input type="text" id="wz-transcriptions-folder" placeholder="1B39qkQvrCocV_IyOT9..." />
+        </div>
+        <div id="wz-runpod-status" class="test-status hidden"></div>
+        <div class="wizard-actions">
+          <button id="wz-test-runpod" class="secondary-button">Tester</button>
+          <button id="wizard-next-2" class="primary-button">Suivant</button>
+        </div>
+      </div>
+
+      <!-- Step 3: Cloudflare R2 -->
+      <div id="wizard-step-3" class="wizard-step hidden">
+        <h2>Cloudflare R2 (stockage temporaire)</h2>
+        <p class="step-desc">Stockage gratuit jusqu'à 10 GB/mois. Les fichiers sont supprimés après 24h.</p>
+        <div class="form-group">
+          <label>Account ID</label>
+          <input type="text" id="wz-r2-account" placeholder="abc123..." />
+        </div>
+        <div class="form-group">
+          <label>Access Key ID</label>
+          <input type="text" id="wz-r2-access-key" placeholder="..." />
+        </div>
+        <div class="form-group">
+          <label>Secret Access Key</label>
+          <input type="password" id="wz-r2-secret" placeholder="..." />
+        </div>
+        <div class="form-group">
+          <label>Bucket</label>
+          <input type="text" id="wz-r2-bucket" placeholder="whisper-temp-audio" />
+        </div>
+        <div class="form-group">
+          <label>Domaine public</label>
+          <input type="text" id="wz-r2-domain" placeholder="pub-xxx.r2.dev" />
+        </div>
+        <div id="wz-r2-status" class="test-status hidden"></div>
+        <div class="wizard-actions">
+          <button id="wz-test-r2" class="secondary-button">Tester</button>
+          <button id="wizard-finish" class="primary-button">Terminer et démarrer</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       MAIN APP (tabs)
+  ════════════════════════════════════════════════════════════ -->
+  <div id="main-screen" class="screen hidden">
+
+    <!-- Tab bar -->
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="upload">Upload</button>
+      <button class="tab-btn" data-tab="automation">
+        Automation
+        <span id="automation-dot" class="status-dot"></span>
+      </button>
+      <button class="tab-btn" data-tab="settings">Paramètres</button>
+    </div>
+
+    <!-- ── TAB: UPLOAD ─────────────────────────────────────────── -->
+    <div id="tab-upload" class="tab-content active">
+      <div class="header">
+        <h1>Upload de vidéo</h1>
+        <p class="subtitle">Glissez-déposez une vidéo pour la préparer à la transcription</p>
+      </div>
+
+      <!-- Watch Folder -->
+      <div class="watch-folder-section">
+        <div class="watch-folder-header">
+          <h3>Surveillance automatique</h3>
+          <button id="toggle-watch" class="toggle-button">
+            <span id="watch-status">●</span>
+            <span id="watch-text">Activer</span>
+          </button>
+        </div>
+        <div id="watch-folder-info" class="watch-folder-info hidden">
+          <p id="watched-folder-path">Aucun dossier sélectionné</p>
+          <button id="select-folder-button" class="secondary-button">Choisir un dossier</button>
+        </div>
+        <div id="watch-activity" class="watch-activity hidden"></div>
+      </div>
+
+      <div class="separator"><span>OU</span></div>
+
+      <div id="drop-zone" class="drop-zone">
+        <div class="drop-content">
+          <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+          <p class="drop-text">Glissez une vidéo ici</p>
+          <p class="drop-subtext">ou cliquez pour sélectionner</p>
+          <input type="file" id="file-input" accept="video/*" style="display: none;">
+        </div>
+      </div>
+
+      <div id="progress-container" class="progress-container hidden">
+        <div class="progress-info">
+          <p id="status-text" class="status-text">Préparation...</p>
+          <p id="progress-percent" class="progress-percent">0%</p>
+        </div>
+        <div class="progress-bar">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+        <div id="details" class="details"></div>
+      </div>
+
+      <div id="success-message" class="success-message hidden">
+        <div class="success-icon">✅</div>
+        <h2>Upload terminé !</h2>
+        <p>Votre vidéo est prête pour la transcription.</p>
+        <button id="new-upload-button" class="primary-button">Nouveau fichier</button>
+      </div>
+    </div>
+
+    <!-- ── TAB: AUTOMATION ────────────────────────────────────── -->
+    <div id="tab-automation" class="tab-content hidden">
+      <div class="automation-header">
+        <div>
+          <h2>Automatisation</h2>
+          <p class="subtitle" id="auto-next-scan">Prochain scan dans --</p>
+        </div>
+        <button id="toggle-automation" class="toggle-button">
+          <span id="auto-status-dot">●</span>
+          <span id="auto-status-text">Activer</span>
+        </button>
+      </div>
+
+      <div class="quick-actions">
+        <button id="btn-run-transcription" class="action-button" disabled>
+          Lancer transcription
+        </button>
+        <button id="btn-run-highlights" class="action-button" disabled>
+          Lancer highlights
+        </button>
+      </div>
+
+      <!-- Transcription queue -->
+      <div class="queue-section">
+        <h3>Queue transcription</h3>
+        <div id="transcription-queue" class="queue-list">
+          <p class="empty-queue">Aucun fichier en attente</p>
+        </div>
+      </div>
+
+      <!-- Highlights queue -->
+      <div class="queue-section">
+        <h3>Queue highlights</h3>
+        <div id="highlights-queue" class="queue-list">
+          <p class="empty-queue">Aucun highlight en attente</p>
+        </div>
+      </div>
+
+      <!-- Log panel -->
+      <div class="log-section">
+        <div class="log-header">
+          <h3>Journal</h3>
+          <button id="btn-clear-logs" class="small-button">Effacer</button>
+        </div>
+        <div id="log-panel" class="log-panel"></div>
+      </div>
+    </div>
+
+    <!-- ── TAB: SETTINGS ──────────────────────────────────────── -->
+    <div id="tab-settings" class="tab-content hidden">
+      <h2>Paramètres</h2>
+
+      <div class="settings-section">
+        <h3>RunPod</h3>
+        <div class="form-group">
+          <label>API Key</label>
+          <input type="password" id="s-runpod-key" placeholder="rp_xxxxxxxx..." />
+        </div>
+        <div class="form-group">
+          <label>Endpoint ID</label>
+          <input type="text" id="s-runpod-endpoint" placeholder="abc123def456" />
+        </div>
+        <div id="s-runpod-status" class="test-status hidden"></div>
+        <button id="s-test-runpod" class="secondary-button">Tester RunPod</button>
+      </div>
+
+      <div class="settings-section">
+        <h3>Cloudflare R2</h3>
+        <div class="form-group">
+          <label>Account ID</label>
+          <input type="text" id="s-r2-account" placeholder="abc123..." />
+        </div>
+        <div class="form-group">
+          <label>Access Key ID</label>
+          <input type="text" id="s-r2-access-key" />
+        </div>
+        <div class="form-group">
+          <label>Secret Access Key</label>
+          <input type="password" id="s-r2-secret" />
+        </div>
+        <div class="form-group">
+          <label>Bucket</label>
+          <input type="text" id="s-r2-bucket" placeholder="whisper-temp-audio" />
+        </div>
+        <div class="form-group">
+          <label>Domaine public</label>
+          <input type="text" id="s-r2-domain" placeholder="pub-xxx.r2.dev" />
+        </div>
+        <div id="s-r2-status" class="test-status hidden"></div>
+        <button id="s-test-r2" class="secondary-button">Tester R2</button>
+      </div>
+
+      <div class="settings-section">
+        <h3>Dossiers Google Drive</h3>
+        <div class="form-group">
+          <label>source_files (ID)</label>
+          <input type="text" id="s-source-folder" placeholder="1A29pkQvrBodU..." />
+        </div>
+        <div class="form-group">
+          <label>transcriptions (ID)</label>
+          <input type="text" id="s-transcriptions-folder" placeholder="1B39qkQvr..." />
+        </div>
+        <div class="form-group">
+          <label>segments_output (ID)</label>
+          <input type="text" id="s-segments-folder" placeholder="1C49rkQvr... (optionnel)" />
+        </div>
+        <div class="form-group">
+          <label>excel_output (ID)</label>
+          <input type="text" id="s-excel-folder" placeholder="1D59skQvr... (optionnel)" />
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Général</h3>
+        <div class="form-group checkbox-group">
+          <input type="checkbox" id="s-auto-start" />
+          <label for="s-auto-start">Démarrer l'automatisation au lancement de l'app</label>
+        </div>
+      </div>
+
+      <div class="settings-actions">
+        <button id="s-save" class="primary-button">Sauvegarder</button>
+        <span id="s-save-status" class="save-status"></span>
+      </div>
+    </div>
+
+  </div><!-- /main-screen -->
+
+  <script src="renderer.js"></script>
+</body>
+</html>

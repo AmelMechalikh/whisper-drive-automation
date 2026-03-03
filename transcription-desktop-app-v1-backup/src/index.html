@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transcription App</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="auth-screen" class="screen">
+    <div class="auth-container">
+      <h1>🎥 Transcription App</h1>
+      <p>Connectez-vous avec Google pour commencer</p>
+      <button id="auth-button" class="primary-button">
+        <img src="https://www.google.com/favicon.ico" alt="Google" class="google-icon">
+        Se connecter avec Google
+      </button>
+    </div>
+  </div>
+
+  <div id="main-screen" class="screen hidden">
+    <div class="header">
+      <h1>📹 Upload de vidéo</h1>
+      <p class="subtitle">Glissez-déposez une vidéo pour la transcrire</p>
+    </div>
+
+    <!-- Watch Folder Section -->
+    <div class="watch-folder-section">
+      <div class="watch-folder-header">
+        <h3>👁️ Surveillance automatique</h3>
+        <button id="toggle-watch" class="toggle-button">
+          <span id="watch-status">●</span>
+          <span id="watch-text">Activer</span>
+        </button>
+      </div>
+      <div id="watch-folder-info" class="watch-folder-info hidden">
+        <p id="watched-folder-path">Aucun dossier sélectionné</p>
+        <button id="select-folder-button" class="secondary-button">Choisir un dossier</button>
+      </div>
+      <div id="watch-activity" class="watch-activity hidden"></div>
+    </div>
+
+    <div class="separator">
+      <span>OU</span>
+    </div>
+
+    <div id="drop-zone" class="drop-zone">
+      <div class="drop-content">
+        <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="17 8 12 3 7 8"></polyline>
+          <line x1="12" y1="3" x2="12" y2="15"></line>
+        </svg>
+        <p class="drop-text">Glissez une vidéo ici</p>
+        <p class="drop-subtext">ou cliquez pour sélectionner</p>
+        <input type="file" id="file-input" accept="video/*" style="display: none;">
+      </div>
+    </div>
+
+    <div id="progress-container" class="progress-container hidden">
+      <div class="progress-info">
+        <p id="status-text" class="status-text">Préparation...</p>
+        <p id="progress-percent" class="progress-percent">0%</p>
+      </div>
+      <div class="progress-bar">
+        <div id="progress-fill" class="progress-fill"></div>
+      </div>
+      <div id="details" class="details"></div>
+    </div>
+
+    <div id="success-message" class="success-message hidden">
+      <div class="success-icon">✅</div>
+      <h2>Upload terminé !</h2>
+      <p>Votre vidéo est en cours de transcription.</p>
+      <button id="new-upload-button" class="primary-button">
+        Nouveau fichier
+      </button>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
